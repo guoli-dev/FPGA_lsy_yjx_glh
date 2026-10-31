@@ -1,0 +1,12 @@
+* text=auto
+
+# Windows 脚本保持 CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制产物
+*.bit binary
+
+# 报告与加密网表不做换行归一化
+*.rpt -text
+*.enc.v -text

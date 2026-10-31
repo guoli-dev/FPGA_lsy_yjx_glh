@@ -1,0 +1,34 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- IAR 构建输出 ---
+car/iar/**/Debug_*/
+car/iar/**/Release_*/
+car/iar/**/settings/
+*.dep
+*.dni
+*.dpi
+
+# --- 安路 TD 构建输出 ---
+fpga/project/td_project/*_Runs/
+fpga/project/td_project/best_result/
+*.db
+*.fsdb
+*.vcd
+
+# --- 本地备份 ---
+*.bak
+*.bak_*
+*.clean_*
+~$*
+
+# --- 编辑器 / 系统 ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

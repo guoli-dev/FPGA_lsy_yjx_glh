@@ -1,0 +1,606 @@
+<title>视觉遥测控制台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Design plan — frosted-glass telemetry console.
+     Light ambient stage with soft blue blobs behind a glass sidebar and
+     glass panels; the active mode is a bookmark tab that juts out of the rail. */
+  :root {
+    color-scheme: light;
+    --bg: #eceef3;
+    --panel: rgba(255, 255, 255, 0.62);
+    --panel-strong: rgba(255, 255, 255, 0.82);
+    --glass-edge: rgba(255, 255, 255, 0.72);
+    --hairline: rgba(29, 29, 31, 0.08);
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --faint: #86868b;
+    --accent: #0066cc;
+    --accent-hover: #0071e3;
+    --success: #34c759;
+    --warning: #ff9f0a;
+    --danger: #ff3b30;
+    --shadow: 0 12px 32px rgba(29, 29, 31, 0.09), 0 2px 6px rgba(29, 29, 31, 0.04);
+    --radius: 18px;
+    --font-ui: "Noto Sans SC", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: var(--font-ui); color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
+  button, select, input { font: inherit; }
+
+  .stage { position: fixed; inset: 0; overflow: hidden; z-index: 0;
+    background: linear-gradient(158deg, #f3f5f9 0%, #eceef3 46%, #e6e9f0 100%); }
+  .blob { position: absolute; border-radius: 50%; filter: blur(64px); opacity: .6; }
+  .b1 { width: 520px; height: 520px; top: -140px; left: -100px; background: radial-gradient(circle, #c3dcff 0%, transparent 68%); }
+  .b2 { width: 560px; height: 560px; bottom: -180px; right: -80px; background: radial-gradient(circle, #d5e4ff 0%, transparent 68%); }
+  .b3 { width: 440px; height: 440px; top: 42%; left: 58%; background: radial-gradient(circle, #c9e2ff 0%, transparent 70%); }
+
+  .app { position: relative; z-index: 1; display: flex; height: 100%; }
+
+  .sidebar { position: relative; z-index: 3; flex: 0 0 240px; width: 240px; height: 100%;
+    display: flex; flex-direction: column; background: rgba(251, 251, 253, 0.55);
+    -webkit-backdrop-filter: blur(26px) saturate(1.25); backdrop-filter: blur(26px) saturate(1.25);
+    border-right: 1px solid var(--hairline); }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 22px 20px 18px; }
+  .brand .mark { font-size: 17px; color: var(--text); }
+  .brand .name { font-weight: 700; font-size: 13px; line-height: 1.25; }
+  .brand .ip { font-size: 11px; color: var(--muted); }
+  .conn { margin: 0 14px 16px; padding: 12px 14px; background: var(--panel-strong);
+    border: 1px solid var(--glass-edge); border-radius: 14px; box-shadow: 0 4px 14px rgba(29,29,31,0.05); }
+  .conn .row { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; }
+  .conn .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); flex: 0 0 auto; }
+  .section-label { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .08em; padding: 0 20px 9px; }
+
+  .modes { display: flex; flex-direction: column; gap: 2px; padding: 0 0 8px; }
+  .mode-btn { position: relative; display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer;
+    padding: 11px 16px; margin: 0 10px; border: 0; background: transparent; color: var(--text);
+    border-radius: 12px; font-size: 13px;
+    transition: background .16s ease, color .16s ease, margin .16s ease, box-shadow .16s ease; }
+  .mode-btn:hover { background: rgba(29, 29, 31, 0.05); }
+  .mode-btn .idx { font-family: var(--font-mono); font-size: 11px; color: var(--faint); width: 12px; }
+  .mode-btn.active { color: #fff; background: var(--accent); margin-right: -10px; border-radius: 12px 0 0 12px;
+    box-shadow: 0 10px 22px rgba(0, 102, 204, 0.35); }
+  .mode-btn.active .idx { color: rgba(255, 255, 255, 0.75); }
+  .mode-btn.active::after { content: ""; position: absolute; right: -10px; top: 0; bottom: 0; width: 10px;
+    background: var(--accent); clip-path: polygon(0 0, 100% 50%, 0 100%); }
+  .side-foot { margin-top: auto; padding: 14px 20px 18px; font-size: 10px; color: var(--faint); }
+
+  .main { position: relative; z-index: 1; flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: auto; }
+  .topnav { display: flex; align-items: center; justify-content: space-between; padding: 0 24px; height: 44px; flex: 0 0 auto;
+    color: #fff; background: rgba(29, 29, 31, 0.92); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+  .topnav .brand { padding: 0; color: #fff; } .topnav .brand .name { font-size: 12px; }
+  .topnav .nav { font-size: 12px; color: #d2d2d7; letter-spacing: .02em; }
+  .topnav .status { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .topnav .status .dot { width: 7px; height: 7px; }
+
+  .subnav { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px 14px; }
+  .subnav h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+  .subnav .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .chip { font-size: 11px; padding: 6px 12px; background: var(--panel-strong);
+    border: 1px solid var(--glass-edge); border-radius: 999px; color: var(--warning); font-weight: 700; }
+
+  .wrap { padding: 0 24px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  .tile { padding: 14px 16px 12px; border-radius: 16px; background: var(--panel);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid var(--glass-edge); box-shadow: var(--shadow); }
+  .tile .k { font-size: 11px; color: var(--muted); }
+  .tile .v { font-size: 20px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tile .v .u { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+
+  .content { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 16px; }
+  .card { border-radius: var(--radius); padding: 18px; background: var(--panel);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid var(--glass-edge); box-shadow: var(--shadow); }
+  .card h2 { margin: 0; font-size: 14px; font-weight: 700; }
+  .card .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .card .head .hint { font-size: 11px; color: var(--muted); }
+
+  .plot { position: relative; height: 300px; border-radius: 12px; background: rgba(250, 250, 252, 0.55);
+    border: 1px solid var(--hairline); overflow: hidden; }
+  .plot .plot-layer { position: absolute; inset: 0; }
+  .plot .cross-v { position: absolute; left: 50%; top: 8%; bottom: 8%; width: 1px; background: rgba(29,29,31,0.10); }
+  .plot .cross-h { position: absolute; top: 50%; left: 5%; right: 5%; height: 1px; background: rgba(29,29,31,0.07); }
+  .plot .title { position: absolute; top: 9px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--muted); }
+  .plot .axis { position: absolute; bottom: 6px; font-size: 10px; color: var(--faint); font-family: var(--font-mono); }
+  .plot .axis.l { left: 10px; } .plot .axis.r { right: 10px; }
+  .blk { position: absolute; height: 24px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.18); }
+  .blk .tag { position: absolute; left: 50%; transform: translateX(-50%); top: -20px; white-space: nowrap;
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px; color: #fff; background: rgba(0,0,0,0.35); }
+  .motion { position: absolute; border: 2px dashed var(--warning); border-radius: 8px; }
+  .motion .tag { position: absolute; top: -18px; left: 0; font-size: 10px; font-weight: 700; color: var(--warning); white-space: nowrap; }
+
+  .log { font-size: 11px; line-height: 1.7; }
+  .log .ln { display: flex; gap: 8px; padding: 2px 0; }
+  .log .t { font-family: var(--font-mono); color: var(--faint); flex: 0 0 auto; }
+  .log .who { font-weight: 700; flex: 0 0 auto; }
+  .log .sys { color: var(--accent); } .log .fpga { color: #004f9f; } .log .host { color: var(--text); } .log .alarm { color: var(--danger); }
+
+  .kv { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; font-size: 12px;
+    border-bottom: 1px solid var(--hairline); }
+  .kv:last-child { border-bottom: 0; }
+  .kv .k { color: var(--muted); } .kv .val { font-variant-numeric: tabular-nums; }
+  .block-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px;
+    background: rgba(250,250,252,0.55); border: 1px solid var(--hairline); margin-bottom: 8px; }
+  .block-row .sw { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  .block-row .nm { font-weight: 700; font-size: 12px; width: 34px; }
+  .block-row .val { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .btn { display: block; width: 100%; text-align: center; padding: 11px; border: 0; border-radius: 11px; cursor: pointer;
+    font-size: 13px; font-weight: 700; background: var(--accent); color: #fff; margin-top: 12px;
+    box-shadow: 0 8px 18px rgba(0,102,204,0.28); transition: background .15s ease; }
+  .btn:hover { background: var(--accent-hover); }
+  .field { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; font-size: 12px; }
+  .field .k { color: var(--muted); }
+  .field input, .field select { text-align: right; background: rgba(250,250,252,0.7); border: 1px solid var(--hairline);
+    border-radius: 8px; padding: 5px 8px; color: var(--text); font-size: 12px; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hidden { display: none !important; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  @media (max-width: 860px) {
+    .app { flex-direction: column; height: auto; }
+    .sidebar { flex: 0 0 auto; width: 100%; height: auto; border-right: 0; border-bottom: 1px solid var(--hairline); }
+    .modes { flex-direction: row; flex-wrap: wrap; padding: 0 12px 12px; }
+    .mode-btn.active { margin-right: 0; border-radius: 12px; } .mode-btn.active::after { display: none; }
+    .metrics { grid-template-columns: repeat(3, 1fr); } .content { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 560px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+
+<div class="stage" aria-hidden="true">
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+</div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="mark">◉</span>
+      <div><div class="name">设备控制</div><div class="ip">192.168.137.2</div></div>
+    </div>
+    <div class="conn">
+      <div class="row"><span class="dot" id="sideDot"></span><span id="sideStatus">等待连接</span></div>
+      <div class="sub">UDP 6001 ↔ 6002</div>
+    </div>
+    <div class="section-label">算法模式</div>
+    <nav class="modes" aria-label="算法模式">
+      <button class="mode-btn" data-mode="0"><span class="idx">0</span>原始画面</button>
+      <button class="mode-btn" data-mode="1"><span class="idx">1</span>边缘检测</button>
+      <button class="mode-btn" data-mode="2"><span class="idx">2</span>卡通化</button>
+      <button class="mode-btn" data-mode="3"><span class="idx">3</span>色块追踪</button>
+      <button class="mode-btn" data-mode="4"><span class="idx">4</span>运动检测</button>
+    </nav>
+    <div class="section-label">车端监控</div>
+    <nav class="modes" aria-label="车端监控">
+      <button class="mode-btn" id="carTab" type="button"><span class="idx">5</span>车端监控</button>
+    </nav>
+    <div class="side-foot">v2.1 · 视觉遥测</div>
+  </aside>
+
+  <main class="main">
+    <header class="topnav">
+      <div class="brand"><span class="mark">●</span><span class="name">FPGA Vision</span></div>
+      <div class="nav">设备总览&nbsp;&nbsp;目标监控&nbsp;&nbsp;性能监控&nbsp;&nbsp;远程控制</div>
+      <div class="status"><span class="dot" id="topDot"></span><span id="topStatus">等待连接</span></div>
+    </header>
+
+    <div class="subnav">
+      <div>
+        <h1>视觉识别控制台</h1>
+        <div class="sub">设备端独立运行 · UDP 仅传输状态与识别数据</div>
+      </div>
+      <span class="chip" id="connChip">等待连接</span>
+    </div>
+
+    <div class="wrap" id="fpgaView">
+      <section class="metrics" aria-label="关键指标">
+        <div class="tile"><div class="k">FPGA 模式</div><div class="v" id="mMode">--</div></div>
+        <div class="tile"><div class="k">画面帧率</div><div class="v"><span id="mFps">--</span><span class="u">FPS</span></div></div>
+        <div class="tile"><div class="k">累计帧号</div><div class="v" id="mFrame">--</div></div>
+        <div class="tile"><div class="k">处理延迟</div><div class="v"><span id="mLatency">--</span><span class="u">帧</span></div></div>
+        <div class="tile"><div class="k">运动区域</div><div class="v" id="mMotion">--</div></div>
+        <div class="tile"><div class="k">接收包 / 告警</div><div class="v" id="mPacket">--</div></div>
+      </section>
+
+      <div class="content">
+        <div class="col">
+          <section class="card">
+            <div class="head"><h2>色块位置图</h2><span class="hint">实时 UDP 色块帧</span></div>
+            <div class="plot">
+              <div class="cross-v"></div>
+              <div class="cross-h"></div>
+              <div class="title">FPGA 识别坐标图 · 1280 × 720</div>
+              <div class="axis l">(0,720)</div>
+              <div class="axis r">(1280,720)</div>
+              <div class="plot-layer" id="dyn"></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="head"><h2>交互记录</h2><span class="hint">UDP 6001</span></div>
+            <div class="log" id="log"></div>
+          </section>
+        </div>
+
+        <div class="col">
+          <section class="card">
+            <div class="head"><h2>识别结果</h2><span class="hint">1280×720 基准</span></div>
+            <div class="block-row"><span class="sw" style="background:#ef4444"></span><span class="nm">红色</span><span class="val" id="vRed">未收到数据</span></div>
+            <div class="block-row"><span class="sw" style="background:#22c55e"></span><span class="nm">绿色</span><span class="val" id="vGreen">未收到数据</span></div>
+            <div class="block-row"><span class="sw" style="background:#3b82f6"></span><span class="nm">蓝色</span><span class="val" id="vBlue">未收到数据</span></div>
+          </section>
+
+          <section class="card">
+            <div class="head"><h2>目标与监控参数</h2></div>
+            <div class="field"><span class="k">监控目标</span>
+              <select id="pFocus" aria-label="监控目标"><option>全部</option><option>红色</option><option>绿色</option><option>蓝色</option></select></div>
+            <div class="field"><span class="k">丢失告警 / 秒</span><input id="pLoss" value="2.0" aria-label="丢失告警秒数"></div>
+            <div class="field"><span class="k">最低帧率 / FPS</span><input id="pFps" value="20" aria-label="最低帧率"></div>
+            <div class="field"><span class="k">运动区域阈值</span><input id="pLimit" value="200" aria-label="运动区域阈值"></div>
+            <button class="btn" id="apply">应用监控参数</button>
+          </section>
+
+          <section class="card">
+            <div class="head"><h2>网络信息</h2></div>
+            <div class="kv"><span class="k">电脑监听</span><span class="val">0.0.0.0 : 6001</span></div>
+            <div class="kv"><span class="k">FPGA 目标</span><span class="val">192.168.137.2 : 6002</span></div>
+            <div class="kv"><span class="k">本机网卡</span><span class="val">192.168.137.1 / 24</span></div>
+            <div class="kv"><span class="k">PHY 链路</span><span class="val" id="vLink">--</span></div>
+            <div class="kv"><span class="k">本次运行</span><span class="val" id="vUptime">00:00:00</span></div>
+            <div class="kv"><span class="k">累计告警</span><span class="val" id="vAlarm">0</span></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap hidden" id="carView">
+      <section class="metrics" aria-label="车端指标">
+        <div class="tile"><div class="k">接收帧率</div><div class="v"><span id="cRate">--</span><span class="u">帧/秒</span></div></div>
+        <div class="tile"><div class="k">累计帧</div><div class="v" id="cFrames">--</div></div>
+        <div class="tile"><div class="k">丢帧</div><div class="v" id="cLost">--</div></div>
+        <div class="tile"><div class="k">目标选择</div><div class="v" id="cMode">--</div></div>
+        <div class="tile"><div class="k">锁定颜色</div><div class="v" id="cLocked">--</div></div>
+        <div class="tile"><div class="k">电池</div><div class="v" id="cBatt">--</div></div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>无线串口</h2><span class="hint" id="cStatus">未连接</span></div>
+        <div class="field"><span class="k">串口</span><select id="cPort" aria-label="车端串口"></select></div>
+        <div class="kv"><span class="k">找口方法</span><span class="val">拔插模块后点刷新，变化的那个就是</span></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" id="cRefresh" type="button"
+                  style="width:auto;flex:1;margin-top:0;background:rgba(250,250,252,0.8);color:var(--text);box-shadow:none;border:1px solid var(--hairline)">刷新</button>
+          <button class="btn" id="cConnect" type="button" style="width:auto;flex:1;margin-top:0">连接</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="head"><h2>色块位置图</h2><span class="hint">车端遥测 · 1280×720 基准</span></div>
+        <div class="plot">
+          <div class="cross-v"></div>
+          <div class="cross-h"></div>
+          <div class="title">车端目标坐标 · X = 640 + dev×8 · 宽 = wid×8</div>
+          <div class="axis l">中心 640</div>
+          <div class="axis r">无 Y 轴数据</div>
+          <div class="plot-layer" id="cPlot"></div>
+        </div>
+      </section>
+
+      <div class="content">
+        <div class="col">
+          <section class="card">
+            <div class="head"><h2>目标色块</h2><span class="hint">车端视觉</span></div>
+            <div class="block-row"><span class="sw" style="background:#ef4444"></span><span class="nm">红色</span><span class="val" id="cRed">未收到数据</span></div>
+            <div class="block-row"><span class="sw" style="background:#22c55e"></span><span class="nm">绿色</span><span class="val" id="cGreen">未收到数据</span></div>
+            <div class="block-row"><span class="sw" style="background:#3b82f6"></span><span class="nm">蓝色</span><span class="val" id="cBlue">未收到数据</span></div>
+            <div class="kv"><span class="k">目标偏差 / 宽度</span><span class="val" id="cDev">--</span></div>
+            <div class="kv"><span class="k">状态</span><span class="val" id="cFlags">--</span></div>
+            <div class="kv"><span class="k">帧序号 / 运行</span><span class="val" id="cState">--</span></div>
+          </section>
+
+          <section class="card">
+            <div class="head"><h2>运动状态</h2><span class="hint">指令 / 实测</span></div>
+            <div class="kv"><span class="k">速度指令 X / Y / Z</span><span class="val" id="cCmd">--</span></div>
+            <div class="kv"><span class="k">四轮实测 LF/RF/LB/RB</span><span class="val" id="cWheels">--</span></div>
+            <div class="kv"><span class="k">车体实测 vx / vy</span><span class="val" id="cVxy">--</span></div>
+          </section>
+        </div>
+
+        <div class="col">
+          <section class="card">
+            <div class="head"><h2>航向</h2><span class="hint">陀螺积分</span></div>
+            <div class="kv"><span class="k">当前航向</span><span class="val" id="cHeading">--</span></div>
+            <div class="kv"><span class="k">航向目标</span><span class="val" id="cTarget">--</span></div>
+            <div class="kv"><span class="k">陀螺 Z</span><span class="val" id="cGyro">--</span></div>
+          </section>
+
+          <section class="card">
+            <div class="head"><h2>说明</h2></div>
+            <div class="kv"><span class="k">数据来源</span><span class="val">车端 UART_1 · 50 Hz</span></div>
+            <div class="kv"><span class="k">协议</span><span class="val">C5 帧 · CRC8</span></div>
+            <div class="kv"><span class="k">影响 FPGA</span><span class="val">无（只读串口）</span></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const btns = [...document.querySelectorAll(".mode-btn[data-mode]")];
+  const carTab = $("carTab"), fpgaView = $("fpgaView"), carView = $("carView");
+  let carOpen = false, carPort = "";
+  const dyn = $("dyn");
+  const blockVals = [$("vRed"), $("vGreen"), $("vBlue")];
+  const SOURCE_CLS = { 系统: "sys", FPGA: "fpga", 上位机: "host", 告警: "alarm" };
+
+  function blockText(b) {
+    if (!b || !b.detected) return "本帧未识别";
+    const side = b.deviation < 0 ? "左" : b.deviation > 0 ? "右" : "中";
+    const y = b.center_y == null ? "--" : b.center_y;
+    return "有效 · X=" + b.center_x + " Y=" + y + " · W=" + b.width + " · " + side + Math.abs(b.deviation * 8);
+  }
+
+  function render(s) {
+    const conn = !!s.connected;
+    const col = conn ? "#34c759" : "#ff9f0a";
+    $("topDot").style.background = col; $("sideDot").style.background = col;
+    $("topStatus").textContent = conn ? "已连接" : "等待连接";
+    $("sideStatus").textContent = conn ? "已连接" : "等待连接";
+    $("connChip").textContent = conn ? "已连接" : "等待连接";
+    $("connChip").style.color = col;
+
+    $("mMode").textContent = s.mode == null ? "--" : s.mode + " · " + s.mode_name;
+    $("mFps").textContent = s.fps == null ? "--" : s.fps;
+    $("mFrame").textContent = s.frame_count == null ? "--" : s.frame_count.toLocaleString();
+    $("mLatency").textContent = s.latency == null ? "--" : s.latency;
+    $("mMotion").textContent = s.motion_count == null ? "--" : s.motion_count;
+    $("mPacket").textContent = s.packet_count + " / " + s.alarm_count;
+    $("vLink").textContent = s.link == null ? "--" : (s.link ? "已连接" : "已断开");
+    $("vLink").style.color = s.link ? "#34c759" : "#ff9f0a";
+    $("vAlarm").textContent = s.alarm_count;
+    const up = s.uptime || 0;
+    $("vUptime").textContent =
+      String(Math.floor(up / 3600)).padStart(2, "0") + ":" +
+      String(Math.floor(up / 60) % 60).padStart(2, "0") + ":" +
+      String(up % 60).padStart(2, "0");
+
+    btns.forEach((b) => b.classList.toggle("active", !carOpen && Number(b.dataset.mode) === s.mode));
+
+    dyn.innerHTML = "";
+    (s.blocks || []).forEach((b, i) => {
+      if (!b.detected || b.center_x == null) return;
+      const left = b.center_x / 1280 * 100;
+      const top = (b.center_y == null ? (i + 1) * 180 : b.center_y) / 720 * 100;
+      const w = Math.max(b.width / 1280 * 100, 2.5);
+      const el = document.createElement("div");
+      el.className = "blk";
+      el.style.background = b.color || "#0066cc";
+      el.style.left = Math.max(0, left - w / 2) + "%";
+      el.style.top = Math.min(86, Math.max(10, top)) + "%";
+      el.style.width = w + "%";
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = b.name + " (" + b.center_x + "," + (b.center_y == null ? "--" : b.center_y) + ") W=" + b.width;
+      el.appendChild(tag);
+      dyn.appendChild(el);
+    });
+
+    const m = s.motion;
+    if (m && m.detected && m.left != null) {
+      const el = document.createElement("div");
+      el.className = "motion";
+      el.style.left = (m.left / 1280 * 100) + "%";
+      el.style.top = (m.top / 720 * 100) + "%";
+      el.style.width = ((m.right - m.left) / 1280 * 100) + "%";
+      el.style.height = ((m.bottom - m.top) / 720 * 100) + "%";
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "运动区域 " + m.motion_count;
+      el.appendChild(tag);
+      dyn.appendChild(el);
+    }
+
+    (s.blocks || []).forEach((b, i) => { if (blockVals[i]) blockVals[i].textContent = blockText(b); });
+
+    renderCar(s.car || {});
+
+    const log = $("log");
+    log.innerHTML = "";
+    const lines = (s.log || []).slice(-30);
+    lines.forEach((e) => {
+      const div = document.createElement("div");
+      div.className = "ln";
+      const t = document.createElement("span"); t.className = "t"; t.textContent = e.time;
+      const w = document.createElement("span"); w.className = "who " + (SOURCE_CLS[e.source] || "sys"); w.textContent = e.source;
+      const msg = document.createElement("span"); msg.textContent = e.message;
+      div.append(t, w, msg);
+      log.appendChild(div);
+    });
+    if (!lines.length) {
+      const div = document.createElement("div");
+      div.className = "ln";
+      const t = document.createElement("span"); t.className = "t"; t.textContent = "--:--:--";
+      const w = document.createElement("span"); w.className = "who sys"; w.textContent = "系统";
+      const msg = document.createElement("span"); msg.textContent = "等待 FPGA 状态帧…";
+      div.append(t, w, msg);
+      log.appendChild(div);
+    }
+  }
+
+  function renderCarPlot(p) {
+    const layer = $("cPlot");
+    layer.innerHTML = "";
+    const colors = ["#ef4444", "#22c55e", "#3b82f6"];
+    p.rgb.forEach((block, index) => {
+      if (block.dev == null) return;
+      const centerX = Math.max(0, Math.min(1279, 640 + block.dev * 8));
+      const width = Math.max(block.wid * 8, 24);
+      const left = centerX / 1280 * 100;
+      const w = Math.max(width / 1280 * 100, 2.5);
+      const top = (index + 1) * 180 / 720 * 100;
+      const el = document.createElement("div");
+      el.className = "blk";
+      el.style.background = colors[index];
+      el.style.left = Math.max(0, left - w / 2).toFixed(2) + "%";
+      el.style.top = Math.min(86, Math.max(10, top)).toFixed(2) + "%";
+      el.style.width = w.toFixed(2) + "%";
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = block.name + " X=" + centerX + " W=" + (block.wid * 8);
+      el.appendChild(tag);
+      layer.appendChild(el);
+    });
+  }
+
+  function devText(dev) {
+    if (dev == null) return "无效";
+    const side = dev > 0 ? "右" : dev < 0 ? "左" : "中";
+    return (dev > 0 ? "+" : "") + dev + " · " + side;
+  }
+
+  function renderCar(car) {
+    const p = car.packet;
+    carPort = car.port || "";
+    $("cStatus").textContent = carPort
+      ? (car.status || "已连接")
+      : (car.pyserial === false ? "未安装 pyserial：pip install pyserial" : (car.status || "未连接"));
+    $("cConnect").textContent = carPort ? "断开" : "连接";
+    $("cRate").textContent = car.rate == null ? "--" : car.rate;
+    $("cFrames").textContent = car.frames == null ? "--" : car.frames;
+    $("cLost").textContent = car.lost == null ? "--" : car.lost;
+    if (!p) { $("cPlot").innerHTML = ""; return; }
+    renderCarPlot(p);
+
+    $("cMode").textContent = p.mode;
+    $("cLocked").textContent = p.locked;
+    $("cBatt").textContent = p.battery > 0 ? p.battery.toFixed(1) + " V" : "--";
+    $("cRed").textContent = devText(p.rgb[0].dev) + " · W=" + p.rgb[0].wid;
+    $("cGreen").textContent = devText(p.rgb[1].dev) + " · W=" + p.rgb[1].wid;
+    $("cBlue").textContent = devText(p.rgb[2].dev) + " · W=" + p.rgb[2].wid;
+    $("cDev").textContent = devText(p.dev) + " / W=" + p.width;
+    $("cCmd").textContent = p.cmd.map((v) => (v > 0 ? "+" : "") + v).join(" / ");
+    $("cWheels").textContent = p.wheels.map((v) => (v > 0 ? "+" : "") + v).join(" / ");
+    $("cVxy").textContent = p.vx + " / " + p.vy + " cm/s";
+    $("cHeading").textContent = p.heading.toFixed(1) + "°";
+    $("cTarget").textContent = p.target.toFixed(1) + "°";
+    $("cGyro").textContent = (p.gyro > 0 ? "+" : "") + p.gyro.toFixed(1) + " °/s";
+    $("cState").textContent = "seq " + p.seq + " · uptime " + p.uptime_ms + " ms";
+
+    const f = p.flags;
+    const flags = [
+      f.imu ? "IMU 就绪" : "IMU 未就绪",
+      f.zero_done ? "零漂完成" : "零漂校准中",
+      f.tracking ? "追踪使能" : "追踪关闭",
+      f.arrived ? "已到达" : "未到达",
+      f.seen ? "见目标" : "无目标",
+    ];
+    if (f.stop) flags.push("停车请求");
+    $("cFlags").textContent = flags.join(" · ");
+  }
+
+  function showCar(open) {
+    carOpen = open;
+    fpgaView.classList.toggle("hidden", open);
+    carView.classList.toggle("hidden", !open);
+    carTab.classList.toggle("active", open);
+    if (open) {
+      btns.forEach((b) => b.classList.remove("active"));
+      loadPorts();
+    }
+  }
+
+  async function loadPorts() {
+    try {
+      const r = await fetch("/car/ports");
+      const j = await r.json();
+      const sel = $("cPort");
+      sel.innerHTML = "";
+      if (!Array.isArray(j.ports)) {
+        $("cStatus").textContent = "服务端还没有串口接口，请重启 server.py";
+        return;
+      }
+      if (j.error) {
+        $("cStatus").textContent = "串口枚举失败：" + j.error;
+      } else if (!j.pyserial) {
+        $("cStatus").textContent = "未安装 pyserial：pip install pyserial";
+      }
+      if (!j.ports.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "未发现串口";
+        sel.appendChild(opt);
+      }
+      j.ports.forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (carPort) sel.value = carPort;
+    } catch (e) { /* server not ready */ }
+  }
+
+  carTab.addEventListener("click", () => showCar(true));
+  $("cRefresh").addEventListener("click", loadPorts);
+  $("cConnect").addEventListener("click", async () => {
+    if (carPort) {
+      await fetch("/car/disconnect", { method: "POST" });
+      return;
+    }
+    const port = $("cPort").value;
+    if (!port) {
+      $("cStatus").textContent = "没有可用串口：检查模块驱动、换 USB 线或先安装 pyserial";
+      return;
+    }
+    const r = await fetch("/car/connect", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port }),
+    });
+    const j = await r.json();
+    if (!j.ok) $("cStatus").textContent = j.error || "打开失败";
+  });
+
+  let prefilled = false;
+  function prefill(s) {
+    if (prefilled || !s.params) return;
+    $("pLoss").value = s.params.loss_seconds;
+    $("pFps").value = s.params.min_fps;
+    $("pLimit").value = s.params.motion_limit;
+    $("pFocus").value = s.focus;
+    prefilled = true;
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch("/state");
+      const s = await r.json();
+      render(s);
+      prefill(s);
+    } catch (e) { /* server not ready yet */ }
+  }
+  poll();
+  setInterval(poll, 200);
+
+  btns.forEach((b) => b.addEventListener("click", () => {
+    showCar(false);
+    fetch("/mode", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: Number(b.dataset.mode) }) });
+  }));
+
+  $("apply").addEventListener("click", () => {
+    fetch("/params", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loss_seconds: $("pLoss").value, min_fps: $("pFps").value,
+        motion_limit: $("pLimit").value, focus: $("pFocus").value }) });
+  });
+</script>
