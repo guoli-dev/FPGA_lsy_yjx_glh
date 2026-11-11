@@ -279,6 +279,10 @@ color_detect_96 #(
 // 不让 mux 直接串上去 (ISP 域余量本来就紧)。
 reg  [95:0] raw_tdata_d;
 reg         raw_tuser_d, raw_tvalid_d, raw_tlast_d;
+// 2026-11-11: edge_detect_96 改成同步读行缓存后，延迟从一拍变成两拍。
+// 原图分支必须跟着再延一拍，否则卡通模式的描边会和色块错位 4 个像素。
+reg  [95:0] raw_tdata_d2;
+reg         raw_tuser_d2, raw_tvalid_d2, raw_tlast_d2;
 wire        edge_tlast, edge_tuser, edge_tvalid, edge_tready;
 wire [95:0] edge_tdata;
 // sel_* 必须是 reg —— 它们在下面的 always 里被赋值 (wire 不能过程赋值, 会报 HDL-8007)
@@ -292,12 +296,20 @@ always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
         raw_tuser_d  <= 1'b0;
         raw_tvalid_d <= 1'b0;
         raw_tlast_d  <= 1'b0;
+        raw_tdata_d2  <= 96'd0;
+        raw_tuser_d2  <= 1'b0;
+        raw_tvalid_d2 <= 1'b0;
+        raw_tlast_d2  <= 1'b0;
     end else begin
-        // 原图分支延一拍, 与 edge_detect 的一拍延迟对齐
+        // 原图分支延两拍, 与 edge_detect_96 的两拍延迟对齐
         raw_tdata_d  <= demo_tdata;
         raw_tuser_d  <= gam_tuser;
         raw_tvalid_d <= gam_tvalid;
         raw_tlast_d  <= gam_tlast;
+        raw_tdata_d2  <= raw_tdata_d;
+        raw_tuser_d2  <= raw_tuser_d;
+        raw_tvalid_d2 <= raw_tvalid_d;
+        raw_tlast_d2  <= raw_tlast_d;
         // 只在帧边界换模式 —— 上游 awb 的 O_tuser 是组合直通、O_tvalid 延两拍,
         // 所以这里只认 gam_tuser, 绝不要求它与 tvalid 同拍。
         if (gam_tuser) S_mode <= I_mode;
@@ -326,15 +338,15 @@ edge_detect_96 #(
 
 // ---- 卡通化: 区域填充 + 边缘描边 (2026-10-10) -----------------------------
 // 对应**基础扩展要求(1)「边缘提取与区域填充」**。纯组合, 0 寄存器 / 0 BRAM / 0 DSP。
-// I_color 用原图(raw_tdata_d), I_edge 用 edge_detect_96 的输出 —— 两者本来就同拍
-// (都在 gamma+1), 所以不需要任何额外对齐逻辑。
+// I_color 用原图(raw_tdata_d2), I_edge 用 edge_detect_96 的输出 —— 两者本来就同拍
+// (都在 gamma+2), 所以不需要任何额外对齐逻辑。
 wire [95:0] cartoon_tdata;
 cartoon_effect_96 #(
     .QUANT_BITS(3)              // 每通道 8 级，共 512 色，保留色块辨识所需的颜色层次。
 ) u_cartoon (
     .I_clk    (axi4s_video_aclk),
     .I_rst_n  (I_rst_n),
-    .I_color  (raw_tdata_d),    // 原图 (已延一拍)
+    .I_color  (raw_tdata_d2),   // 原图 (已延两拍)
     .I_edge   (edge_tdata ),    // 边缘图 (同拍)
     .O_cartoon(cartoon_tdata)
 );
@@ -343,7 +355,7 @@ cartoon_effect_96 #(
 // (2 原来是 SEG 分割模式的占位, 一直回落到原图; 2026-10-10 改成卡通化,
 //  直接补上基础扩展要求(1) 的"区域填充"。)
 wire [95:0] S_mux_tdata = (S_mode == 2'd1) ? edge_tdata    :
-                          (S_mode == 2'd2) ? cartoon_tdata : raw_tdata_d;
+                          (S_mode == 2'd2) ? cartoon_tdata : raw_tdata_d2;
 
 always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
     if (!I_rst_n) begin
@@ -353,9 +365,9 @@ always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
         sel_tlast  <= 1'b0;
     end else begin
         sel_tdata  <= S_mux_tdata;
-        sel_tuser  <= raw_tuser_d;
-        sel_tvalid <= raw_tvalid_d;
-        sel_tlast  <= raw_tlast_d;
+        sel_tuser  <= raw_tuser_d2;
+        sel_tvalid <= raw_tvalid_d2;
+        sel_tlast  <= raw_tlast_d2;
     end
 end
 
@@ -2003,21 +2015,38 @@ module color_box_ccl_96 #(
 endmodule
 
 // ============================================================================
-// edge_detect_96 —— Sobel 边缘检测 (2026-10-10 从 One 工程搬来)
+// edge_detect_96 —— Sobel 边缘检测（2026-11-11 全分辨率重写）
 //
 // 为什么写在这个文件里: TD 每次 GUI 保存会重写工程文件(.al), 手工加进去的
 // 独立源文件会被丢掉 (denoise_96 就这么丢过, 报 HDL-8007: black box)。
 // 所以新模块必须塞进已在 .al 列表里的文件 —— isp_top.v 就在列表里。
 //
-// 资源: 两个行缓存(320x16) 标了 ram_style="block" -> 2 块 BRAM;
-//       亮度和 Sobel 全用移位加减, **0 个 DSP**。
-// 接口: 和主链路一样 96 位 = 4xRGB888, 一拍一个组, 一拍延迟。
-// 输出: 白边黑底 (边缘=0xffffff, 非边缘=0x000000)。
+// 为什么重写
+// ----------
+// 旧版先把相邻两个像素平均成一个 pair（水平 2:1 降采样），再在 pair 网格上做
+// Sobel。1 px 细线的梯度响应只剩全分辨率的一半，实测文字笔画会糊成实心块。
+// 用 numpy 位精确模型量化（工具见 fpga/tools/edge_compare.py）：
+//     text 图边缘像素  旧 76.6 个/行 → 新 61.4 个/行，笔画之间重新分开。
+// 现在改成**全分辨率 3x3 Sobel**，一拍直接算 4 个像素。
+//
+// 三个实现要点
+// ------------
+// 1) 行缓存改成 320 x 32 bit（一拍 4 个灰度像素一个 word），并且**同步读**才能
+//    推断成 ERAM。旧版是异步读，ram_style="block" 根本没生效——实测 u_edge
+//    ERAM=0、DRAM=256，那 256 个 LUT 比 2 块 ERAM 贵得多。
+// 2) 同步读天然晚一拍，所以本模块变成**两拍延迟**（旧版一拍）。isp_top 里的
+//    原图分支必须跟着多延一拍，否则卡通模式的描边会和色块错位。
+// 3) Sobel 窗口用**后向**（中心落在第 i-1 个像素），这样一个 6 列窗口就能把 4 个
+//    像素全算完，不用等下一组的第一个像素。代价是边缘整体右移 1 px
+//    （旧版是右移 2 px，反而更偏）。
+//
+// 资源: 2 块 ERAM + 纯移位加减，0 DSP。
+// 输出: 白边黑底（边缘=0xffffff，非边缘=0x000000），门限由 I_edge_th 给。
 // ============================================================================
 module edge_detect_96 #(
     parameter IMG_WIDTH  = 1280,
     parameter IMG_HEIGHT = 720,
-    parameter EDGE_TH    = 11'd80    // 缺省门，实际比较门限由上层 I_edge_th 输入
+    parameter EDGE_TH    = 11'd80    // 缺省门，实际门限仍由上层 I_edge_th 输入
 )(
     input               I_clk,
     input               I_rst_n,
@@ -2027,7 +2056,6 @@ module edge_detect_96 #(
     input               I_tvalid,
     input               I_tready,
     // 门限由上层传入：边缘显示使用 80，卡通描边使用 60。
-    // Sobel 幅度和比较器不变，后续硬件标定仍可只调整上层常量。
     input      [10:0]   I_edge_th,
     output reg          O_tlast,
     output reg          O_tuser,
@@ -2038,130 +2066,212 @@ module edge_detect_96 #(
 
 assign O_tready = I_tready;
 
+localparam GRP_W = IMG_WIDTH  >> 2;      // 320 组/行
+localparam LAST  = GRP_W - 1;
+
+// ---------------------------------------------------------------- 灰度
 wire [23:0] pix0 = I_tdata[95:72];
 wire [23:0] pix1 = I_tdata[71:48];
 wire [23:0] pix2 = I_tdata[47:24];
-wire [23:0] pix3 = I_tdata[23:0];
+wire [23:0] pix3 = I_tdata[23: 0];
 
-// Low-cost luminance approximation: R/4 + G/2 + B/4.  Its maximum is
-// 253, so it cannot overflow an 8-bit result and requires no divider.
+// R/4 + G/2 + B/4：最大值 253，不会溢出 8 bit，纯移位加减，与旧版一致。
 wire [7:0] gray0 = {2'b0,pix0[23:18]} + {1'b0,pix0[15:9]} + {2'b0,pix0[7:2]};
 wire [7:0] gray1 = {2'b0,pix1[23:18]} + {1'b0,pix1[15:9]} + {2'b0,pix1[7:2]};
 wire [7:0] gray2 = {2'b0,pix2[23:18]} + {1'b0,pix2[15:9]} + {2'b0,pix2[7:2]};
 wire [7:0] gray3 = {2'b0,pix3[23:18]} + {1'b0,pix3[15:9]} + {2'b0,pix3[7:2]};
 
-localparam IMG_WIDTH_GRP = (IMG_WIDTH >> 2);
+wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 
-// Use two grayscale samples per 4-pixel input beat.  Each sample represents
-// a neighbouring pair of pixels, providing 640 horizontal edge samples while
-// keeping the two line buffers small enough for this device.
-wire [8:0] pair_sum0 = {1'b0,gray0} + {1'b0,gray1};
-wire [8:0] pair_sum1 = {1'b0,gray2} + {1'b0,gray3};
-wire [7:0] pair0 = pair_sum0[8:1];
-wire [7:0] pair1 = pair_sum1[8:1];
+// ---------------------------------------------------------------- 行缓存
+// 两块 320x32 的缓冲，按行奇偶交换角色：
+//   par=0: memA = 第 y-1 行(mid)，memB = 第 y-2 行(top)，本行写 memB
+//   par=1: memA = 第 y-2 行(top)，memB = 第 y-1 行(mid)，本行写 memA
+// 写比读晚两拍，读和写永远落在不同地址上，不会撞同一个 word。
+// 行缓存不做复位：复位循环会把它们变成寄存器，前两行由 win_ok 屏蔽掉。
+(* ram_style = "block" *) reg [31:0] memA [0:LAST];
+(* ram_style = "block" *) reg [31:0] memB [0:LAST];
 
-(* ram_style = "block" *) reg [15:0] line1_mem [0:IMG_WIDTH_GRP-1];
-(* ram_style = "block" *) reg [15:0] line2_mem [0:IMG_WIDTH_GRP-1];
+reg [10:0] x_grp;        // 组号 0..319
+reg [9:0]  y_pos;        // 行号 0..719
+reg        par;          // 行奇偶
 
-reg [10:0] x_grp;
-reg [10:0] y_pos;
+wire       tuser_v  = I_tuser && I_tvalid;
+wire [10:0] cur_addr = tuser_v ? 11'd0 : x_grp;
 
-wire [15:0] top_word = line2_mem[x_grp];
-wire [15:0] mid_word = line1_mem[x_grp];
-wire [15:0] bot_word = {pair0,pair1};
+reg [31:0] a_q, b_q;             // 两块缓存的同步读输出（打一拍）
+reg [31:0] bot_word_d;           // 本组像素延一拍，与读出的数据对齐
+reg [31:0] bot_word_d2;          // 再延一拍，给写端口用
+reg [10:0] x_d;
+reg [9:0]  y_d;
+reg        u_d, l_d, v_d, par_d;
+reg [10:0] addr_d1, addr_d2;
+reg        par_d1, par_d2, v_d2;
 
-wire [7:0] top0 = top_word[15:8];
-wire [7:0] top1 = top_word[7:0];
-wire [7:0] mid0 = mid_word[15:8];
-wire [7:0] mid1 = mid_word[7:0];
-
-reg [7:0] top_prev2, top_prev1;
-reg [7:0] mid_prev2, mid_prev1;
-reg [7:0] bot_prev2, bot_prev1;
-
-function [13:0] sobel_mag;
-    input [7:0] a00, a01, a02;
-    input [7:0] a10, a11, a12;
-    input [7:0] a20, a21, a22;
-    reg signed [12:0] gx_f;
-    reg signed [12:0] gy_f;
-    reg [12:0] abs_gx_f;
-    reg [12:0] abs_gy_f;
-    begin
-        gx_f = -$signed({1'b0,a00}) + $signed({1'b0,a02})
-             - ($signed({1'b0,a10}) <<< 1) + ($signed({1'b0,a12}) <<< 1)
-             - $signed({1'b0,a20}) + $signed({1'b0,a22});
-        gy_f =  $signed({1'b0,a00}) + ($signed({1'b0,a01}) <<< 1) + $signed({1'b0,a02})
-             - $signed({1'b0,a20}) - ($signed({1'b0,a21}) <<< 1) - $signed({1'b0,a22});
-        abs_gx_f = gx_f[12] ? (~gx_f + 1'b1) : gx_f;
-        abs_gy_f = gy_f[12] ? (~gy_f + 1'b1) : gy_f;
-        sobel_mag = abs_gx_f + abs_gy_f;
-    end
-endfunction
-
-// Two Sobel windows are evaluated per input beat. Each result is duplicated
-// to its corresponding pair of output pixels.
-wire [13:0] mag0 = sobel_mag(top_prev2,top_prev1,top0,
-                             mid_prev2,mid_prev1,mid0,
-                             bot_prev2,bot_prev1,pair0);
-wire [13:0] mag1 = sobel_mag(top_prev1,top0,top1,
-                             mid_prev1,mid0,mid1,
-                             bot_prev1,pair0,pair1);
-
-wire window_valid = (y_pos >= 11'd2) && (x_grp != 11'd0) && !I_tuser;
-wire edge0 = window_valid && (mag0 >= I_edge_th);
-wire edge1 = window_valid && (mag1 >= I_edge_th);
-
-wire [23:0] out0 = edge0 ? 24'hffffff : 24'h000000;
-wire [23:0] out1 = edge1 ? 24'hffffff : 24'h000000;
+// par_d 是行奇偶延后一拍，和 a_q/b_q 属于同一拍，用它选 mid/top 才不会错行。
+wire [31:0] mid_word = par_d ? b_q : a_q;   // 第 y-1 行
+wire [31:0] top_word = par_d ? a_q : b_q;   // 第 y-2 行
 
 always @(posedge I_clk or negedge I_rst_n) begin
-    if(!I_rst_n) begin
-        O_tlast  <= 1'b0;
-        O_tuser  <= 1'b0;
+    if (!I_rst_n) begin
+        x_grp      <= 11'd0;
+        y_pos      <= 10'd0;
+        par        <= 1'b0;
+        a_q        <= 32'd0;
+        b_q        <= 32'd0;
+        bot_word_d <= 32'd0;
+        bot_word_d2<= 32'd0;
+        x_d        <= 11'd0;
+        y_d        <= 10'd0;
+        u_d        <= 1'b0;
+        l_d        <= 1'b0;
+        v_d        <= 1'b0;
+        par_d      <= 1'b0;
+        addr_d2    <= 11'd0;
+        par_d1     <= 1'b0;
+        par_d2     <= 1'b0;
+        v_d2       <= 1'b0;
+    end else begin
+        // ---- 同步读：两块缓存每个时钟都无条件读，打一拍后由 par_d 选角色 ----
+        // 不写 if/else 分支，综合器才容易把 memA/memB 推断成真正的 ERAM。
+        a_q <= memA[cur_addr];
+        b_q <= memB[cur_addr];
+
+        // ---- 写：晚两拍，写的是本行第 y 行数据，覆盖掉已经读完的第 y-2 行 ----
+        if (v_d2) begin
+            if (par_d2) memA[addr_d2] <= bot_word_d2;
+            else        memB[addr_d2] <= bot_word_d2;
+        end
+
+        bot_word_d  <= bot_word;
+        bot_word_d2 <= bot_word_d;
+        // 写地址/行奇偶也要延两拍，和 bot_word_d2 属于同一拍，否则会把像素写错行。
+        addr_d1     <= cur_addr;
+        addr_d2     <= addr_d1;
+        par_d1      <= par;
+        par_d2      <= par_d1;
+        v_d2        <= v_d;
+
+        x_d   <= cur_addr;
+        y_d   <= y_pos;
+        u_d   <= I_tuser;
+        l_d   <= I_tlast;
+        v_d   <= I_tvalid;
+        par_d <= par;
+
+        if (I_tvalid) begin
+            if (I_tuser) begin
+                x_grp <= 11'd1;
+                y_pos <= 10'd0;
+                par   <= 1'b0;
+            end else if (cur_addr == LAST) begin
+                x_grp <= 11'd0;
+                par   <= ~par;
+                y_pos <= (y_pos == IMG_HEIGHT - 1) ? 10'd0 : (y_pos + 10'd1);
+            end else begin
+                x_grp <= x_grp + 11'd1;
+            end
+        end
+    end
+end
+
+// ------------------------------------------------- 上一组的最后两个像素
+// 后向窗口要拿左边两个邻居，它们来自上一组的 pixel2/pixel3。
+reg [7:0] t_c2, t_c1, m_c2, m_c1, b_c2, b_c1;
+
+always @(posedge I_clk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
+        t_c2 <= 8'd0; t_c1 <= 8'd0;
+        m_c2 <= 8'd0; m_c1 <= 8'd0;
+        b_c2 <= 8'd0; b_c1 <= 8'd0;
+    end else if (v_d) begin
+        t_c2 <= top_word[15: 8]; t_c1 <= top_word[ 7: 0];
+        m_c2 <= mid_word[15: 8]; m_c1 <= mid_word[ 7: 0];
+        b_c2 <= bot_word_d[15:8]; b_c1 <= bot_word_d[7:0];
+    end
+end
+
+// ------------------------------------------------- 6 列 x 3 行窗口
+wire [7:0] t0 = t_c2, t1 = t_c1;
+wire [7:0] t2 = top_word[31:24], t3 = top_word[23:16];
+wire [7:0] t4 = top_word[15: 8], t5 = top_word[ 7: 0];
+
+wire [7:0] m0 = m_c2, m1 = m_c1;
+wire [7:0] m2 = mid_word[31:24], m3 = mid_word[23:16];
+wire [7:0] m4 = mid_word[15: 8], m5 = mid_word[ 7: 0];
+
+wire [7:0] b0 = b_c2, b1 = b_c1;
+wire [7:0] b2 = bot_word_d[31:24], b3 = bot_word_d[23:16];
+wire [7:0] b4 = bot_word_d[15: 8], b5 = bot_word_d[ 7: 0];
+
+// 纵向 1-2-1 加权和：V[j] = top[j] + 2*mid[j] + bot[j]
+// 4 个像素共用这 6 个 V，不用各算一遍。
+wire [9:0] V0 = {2'b0,t0} + {1'b0,m0,1'b0} + {2'b0,b0};
+wire [9:0] V1 = {2'b0,t1} + {1'b0,m1,1'b0} + {2'b0,b1};
+wire [9:0] V2 = {2'b0,t2} + {1'b0,m2,1'b0} + {2'b0,b2};
+wire [9:0] V3 = {2'b0,t3} + {1'b0,m3,1'b0} + {2'b0,b3};
+wire [9:0] V4 = {2'b0,t4} + {1'b0,m4,1'b0} + {2'b0,b4};
+wire [9:0] V5 = {2'b0,t5} + {1'b0,m5,1'b0} + {2'b0,b5};
+
+// 横向 1-2-1 加权和：HT/HB 只算上、下两行
+wire [9:0] HT0 = {2'b0,t0} + {1'b0,t1,1'b0} + {2'b0,t2};
+wire [9:0] HT1 = {2'b0,t1} + {1'b0,t2,1'b0} + {2'b0,t3};
+wire [9:0] HT2 = {2'b0,t2} + {1'b0,t3,1'b0} + {2'b0,t4};
+wire [9:0] HT3 = {2'b0,t3} + {1'b0,t4,1'b0} + {2'b0,t5};
+wire [9:0] HB0 = {2'b0,b0} + {1'b0,b1,1'b0} + {2'b0,b2};
+wire [9:0] HB1 = {2'b0,b1} + {1'b0,b2,1'b0} + {2'b0,b3};
+wire [9:0] HB2 = {2'b0,b2} + {1'b0,b3,1'b0} + {2'b0,b4};
+wire [9:0] HB3 = {2'b0,b3} + {1'b0,b4,1'b0} + {2'b0,b5};
+
+// 梯度：gx = V[i] - V[i-2]，gy = HT[i] - HB[i]
+wire signed [10:0] gx0 = $signed({1'b0,V0}) - $signed({1'b0,V2});
+wire signed [10:0] gx1 = $signed({1'b0,V1}) - $signed({1'b0,V3});
+wire signed [10:0] gx2 = $signed({1'b0,V2}) - $signed({1'b0,V4});
+wire signed [10:0] gx3 = $signed({1'b0,V3}) - $signed({1'b0,V5});
+wire signed [10:0] gy0 = $signed({1'b0,HT0}) - $signed({1'b0,HB0});
+wire signed [10:0] gy1 = $signed({1'b0,HT1}) - $signed({1'b0,HB1});
+wire signed [10:0] gy2 = $signed({1'b0,HT2}) - $signed({1'b0,HB2});
+wire signed [10:0] gy3 = $signed({1'b0,HT3}) - $signed({1'b0,HB3});
+
+wire [10:0] ax0 = gx0[10] ? (~gx0 + 11'd1) : gx0[10:0];
+wire [10:0] ax1 = gx1[10] ? (~gx1 + 11'd1) : gx1[10:0];
+wire [10:0] ax2 = gx2[10] ? (~gx2 + 11'd1) : gx2[10:0];
+wire [10:0] ax3 = gx3[10] ? (~gx3 + 11'd1) : gx3[10:0];
+wire [10:0] ay0 = gy0[10] ? (~gy0 + 11'd1) : gy0[10:0];
+wire [10:0] ay1 = gy1[10] ? (~gy1 + 11'd1) : gy1[10:0];
+wire [10:0] ay2 = gy2[10] ? (~gy2 + 11'd1) : gy2[10:0];
+wire [10:0] ay3 = gy3[10] ? (~gy3 + 11'd1) : gy3[10:0];
+
+wire [11:0] mag0 = {1'b0,ax0} + {1'b0,ay0};
+wire [11:0] mag1 = {1'b0,ax1} + {1'b0,ay1};
+wire [11:0] mag2 = {1'b0,ax2} + {1'b0,ay2};
+wire [11:0] mag3 = {1'b0,ax3} + {1'b0,ay3};
+
+// 前两行、每行第一组没有完整的左邻，直接置黑。
+wire        win_ok = (y_d >= 10'd2) && (x_d != 11'd0);
+wire [11:0] th_ext = {1'b0, I_edge_th};
+
+wire e0 = win_ok && (mag0 >= th_ext);
+wire e1 = win_ok && (mag1 >= th_ext);
+wire e2 = win_ok && (mag2 >= th_ext);
+wire e3 = win_ok && (mag3 >= th_ext);
+
+wire [23:0] o0 = e0 ? 24'hffffff : 24'h000000;
+wire [23:0] o1 = e1 ? 24'hffffff : 24'h000000;
+wire [23:0] o2 = e2 ? 24'hffffff : 24'h000000;
+wire [23:0] o3 = e3 ? 24'hffffff : 24'h000000;
+
+always @(posedge I_clk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
         O_tdata  <= 96'd0;
         O_tvalid <= 1'b0;
-        x_grp    <= 11'd0;
-        y_pos    <= 11'd0;
-        top_prev2 <= 8'd0; top_prev1 <= 8'd0;
-        mid_prev2 <= 8'd0; mid_prev1 <= 8'd0;
-        bot_prev2 <= 8'd0; bot_prev1 <= 8'd0;
-        // Do not clear line memories here.  A reset loop turns the 10-Kbit
-        // buffers into slice registers on this device.  The first two rows
-        // are masked by window_valid and naturally initialize both buffers.
+        O_tuser  <= 1'b0;
+        O_tlast  <= 1'b0;
     end else begin
-        O_tlast  <= I_tlast;
-        O_tuser  <= I_tuser;
-        O_tvalid <= I_tvalid;
-
-        if(I_tvalid) begin
-            O_tdata <= {out0,out0,out1,out1};
-
-            line2_mem[x_grp] <= mid_word;
-            line1_mem[x_grp] <= bot_word;
-
-            top_prev2 <= top0; top_prev1 <= top1;
-            mid_prev2 <= mid0; mid_prev1 <= mid1;
-            bot_prev2 <= pair0; bot_prev1 <= pair1;
-
-            if(I_tuser) begin
-                x_grp <= 11'd1;
-                y_pos <= 11'd0;
-            end else if(x_grp == IMG_WIDTH_GRP - 1) begin
-                x_grp <= 11'd0;
-                if(y_pos == IMG_HEIGHT - 1)
-                    y_pos <= 11'd0;
-                else
-                    y_pos <= y_pos + 1'b1;
-                top_prev2 <= 8'd0; top_prev1 <= 8'd0;
-                mid_prev2 <= 8'd0; mid_prev1 <= 8'd0;
-                bot_prev2 <= 8'd0; bot_prev1 <= 8'd0;
-            end else begin
-                x_grp <= x_grp + 1'b1;
-            end
-        end else begin
-            O_tdata <= 96'd0;
-        end
+        O_tdata  <= v_d ? {o0,o1,o2,o3} : 96'd0;
+        O_tvalid <= v_d;
+        O_tuser  <= u_d;
+        O_tlast  <= l_d;
     end
 end
 
