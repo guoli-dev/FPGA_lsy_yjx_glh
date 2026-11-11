@@ -53,7 +53,11 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             encode_mode(5)
         self.assertIsNone(parse_packet(b"bad"))
-        self.assertIsNone(parse_packet(bytes.fromhex("AA 07 00 00 01 55")))
+        # 板上按键能切到 5-7，状态帧必须解析得出来，否则上位机会丢帧并停在旧模式
+        packet = parse_packet(bytes.fromhex("AA 07 00 00 01 55"))
+        self.assertIsInstance(packet, StatusPacket)
+        self.assertEqual(packet.mode, 7)
+        self.assertIsNone(parse_packet(bytes.fromhex("AA 08 00 00 01 55")))
 
     def test_motion_box_packet(self):
         # box = {10'd0, 11'd0, valid=1, left=100, right=300, top=50, bottom=200}

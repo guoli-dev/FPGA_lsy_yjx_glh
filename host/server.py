@@ -17,6 +17,7 @@ from protocol import (
     ColorBlock,
     ColorPacket,
     MODE_NAMES,
+    SETTABLE_MODES,
     MotionBox,
     MotionPacket,
     StatusPacket,
@@ -382,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
             data = {}
         if path == "/mode":
             mode = int(data.get("mode", -1))
-            if mode in MODE_NAMES:
+            if mode in SETTABLE_MODES:
                 WORKER.set_mode(mode)
                 STATE.set_mode(mode)
                 self._json({"ok": True})

@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from protocol import (
     ColorPacket,
     MODE_NAMES,
+    SETTABLE_MODES,
     MotionPacket,
     StatusPacket,
     encode_color_request,
@@ -345,7 +346,8 @@ class VisionConsole:
 
         tk.Label(sidebar, text="算法模式", bg=SIDEBAR, fg=MUTED,
                  font=(FONT, 9, "bold")).pack(anchor="w", padx=20, pady=(0, 9))
-        for mode, name in MODE_NAMES.items():
+        for mode in sorted(SETTABLE_MODES):
+            name = MODE_NAMES[mode]
             button = tk.Button(sidebar, text=f"{mode}    {name}", anchor="w",
                                command=lambda selected=mode: self._select_mode(selected),
                                bg=SIDEBAR, fg=TEXT, activebackground="#e8e8ed",
