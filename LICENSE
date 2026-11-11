@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----------------------------------------------------------------------------
-This MIT license covers the original work of this repository's authors:
-the host software under host/, the vehicle application code under car/,
-the top-level integration and constraints, and the documentation.
-
-Files that carry their own copyright headers (MiLianKe, Anlogic Inc.,
-SeekFree / 成都逐飞科技, and the XiaoQingquan reference modules) are NOT
-relicensed by this file. They remain under their original authors' terms
-and are included here only so that the design can be rebuilt and reviewed.
-See NOTICE.md for details.

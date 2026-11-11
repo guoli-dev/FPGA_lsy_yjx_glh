@@ -3,6 +3,19 @@
 本仓库以 MIT 许可发布本团队的原创代码。下列文件带有各自的版权头，**不在 MIT 授权范围内**，
 它们保留原作者权利，在此仅为使工程可复现而随仓库分发。若需单独复用这些文件，请向原权利人获取授权。
 
+## 许可范围
+
+[LICENSE](LICENSE) 中的 MIT 许可覆盖本团队的原创部分：
+
+- `host/` 下的上位机软件（Python / HTML / JS）
+- `car/` 下的底盘应用代码
+- FPGA 侧的顶层集成、模式控制与约束文件
+- 仓库内的文档
+
+带有各自版权头的文件（MiLianKe、Anlogic Inc.、SeekFree / 成都逐飞科技，以及
+XiaoQingquan 参考模块）**不被本仓库的 MIT 许可重新授权**，它们保留原作者条款，
+在此仅随工程分发以便重新构建与评审。
+
 ## 1. 安路科技（Anlogic Inc.）
 
 - `fpga/project/user_source/ip_source/` —— TD IP 工具生成的 PLL、FIFO、Block Memory、除法器、
