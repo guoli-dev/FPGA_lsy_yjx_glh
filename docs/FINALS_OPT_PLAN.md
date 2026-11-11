@@ -96,6 +96,33 @@
 如果 TD 没有把 memA/memB 推断成 ERAM（例如显示成几千 LUT），说明推断失败，
 不要继续布线，先把读端口写法调整成更标准的单写单读结构。
 
+### 2.4 TD 无 GUI 综合验证（2026-11-11）
+
+`td_commands_prompt.exe` 可以脱离 GUI 跑。命令序列（无 run 目录时）：
+
+```tcl
+import_device ph1_35p.db -package PH1P35MDG324 -speed 3
+open_project {camera_to_dsi_display.al}
+elaborate -top design_top_wrapper
+optimize_rtl
+```
+
+结果：
+- `elaborate` 通过，**没有任何 HDL 语法错误**；
+- `optimize_rtl` 完成，44456 实例 / 141299 网络；
+- 关键日志：`extracting RAM for identifier 'memA'` / `'memB'` —— **两块 320×32 行缓存被识别成 RAM**。
+  旧版 `line1_mem`/`line2_mem` 同样会打印 extracting，但因为异步读最终映射到 DRAM；
+  新版是同步读，才能落到 ERAM。
+
+注意事项：
+- 直接从命令行跑会因为缺 GUI 生成的 run 参数，在 Flatten 阶段报
+  `SYN-8534 ERROR: Can not get the inst "...u_ddrphy_byte" location`。
+  **这是 DDR PHY 的实例位置约束缺失，与本次改动无关**，不影响 RTL 合法性；
+  在 TD GUI 里正常建 run 后不会有这个错。
+- `report_area` 在纯 RTL 阶段输出为空文件，面积数字要以 GUI 流程布线后的
+  `final_area.rpt` 为准。预计 `u_edge` 占用约 2 块 ERAM + 300~450 LUT，
+  净变化在 ±150 slice 以内（当前余量 2146）。
+
 ### 2.3 验收
 - 主观：细线、文字轮廓可见，白边由 4 px 变 2 px
 - 客观（可选）：位精确模型输出细线响应比 / 边缘宽度 / 定位误差
