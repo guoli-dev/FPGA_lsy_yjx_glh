@@ -17,6 +17,93 @@ version:     :
                  ???????????????????????????????
                  ????????????
 *****************************************************************/
+// ============================================================================
+// 串行除法器（2026-11-12）
+//
+// 替代原来的 50 级流水线除法器 IP。依据：增益已改为"整帧恒定"，一帧只需要
+// R/B 各一次除法，而消隐期有几千个周期 —— 完全不需要每拍出结果的高吞吐结构。
+//
+// 公式：Q = clamp( (num) / (den), 0xFFFFF )，num = sum_g<<16，den = sum_ch。
+//
+// 算法：标准移位/减（restoring division），从 num 的最高位开始，每一位：
+//   cand = (rem << 1) | num[i]
+//   cand >= den  ->  商的第 i 位 = 1，rem = cand - den
+//              否则 rem = cand
+// 只需要商的低 20 位。i >= 20 的阶段只判断"够不够减"——够就说明商在这一位
+// 是 1，也就是说商 >= 2^20，直接判饱和；这一段不需要真的减。
+//
+// 位宽：sum_*(26 bit) << 16 = 42 bit；den 26 bit；余数最大 < den，左移一位
+//       占 27 bit。
+// 周期：42 拍一次，R/B 共 84 拍，远小于消隐期。
+// ============================================================================
+module awb_div_serial (
+    input              I_clk,
+    input              I_rst_n,
+    input              I_start,
+    input      [41:0]  I_num,
+    input      [25:0]  I_den,
+    output reg [19:0]  O_quo,
+    output reg         O_done,
+    output reg         O_busy
+);
+    reg [5:0]  cnt;
+    reg [41:0] num;
+    reg [25:0] den;
+    reg [26:0] rem;
+    reg [19:0] quo_sr;      // 移位寄存器：20 拍后正好是 Q[19:0]
+    reg        sat;
+
+    wire [26:0] cand = {rem[25:0], num[cnt]};
+
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            cnt    <= 6'd0;
+            num    <= 42'd0;
+            den    <= 26'd1;
+            rem    <= 27'd0;
+            quo_sr <= 20'd0;
+            sat    <= 1'b0;
+            O_quo  <= 20'h10000;
+            O_done <= 1'b0;
+            O_busy <= 1'b0;
+        end else begin
+            O_done <= 1'b0;
+            if (I_start && !O_busy) begin
+                num    <= I_num;
+                den    <= (I_den == 26'd0) ? 26'd1 : I_den;
+                cnt    <= 6'd41;
+                rem    <= 27'd0;
+                quo_sr <= 20'd0;
+                sat    <= 1'b0;
+                O_busy <= 1'b1;
+            end else if (O_busy) begin
+                if (cnt >= 6'd20) begin
+                    // 高位阶段：只判"够不够减"，不减。
+                    if (cand >= {1'b0, den}) sat <= 1'b1;
+                    rem <= cand;
+                    cnt <= cnt - 6'd1;
+                end else begin
+                    if (cand >= {1'b0, den}) begin
+                        rem    <= cand - {1'b0, den};
+                        quo_sr <= {quo_sr[18:0], 1'b1};
+                    end else begin
+                        rem    <= cand;
+                        quo_sr <= {quo_sr[18:0], 1'b0};
+                    end
+                    if (cnt == 6'd0) begin
+                        O_busy <= 1'b0;
+                        O_done <= 1'b1;
+                        O_quo  <= sat ? 20'hFFFFF : {quo_sr[18:0],
+                                    (cand >= {1'b0, den})};
+                    end else begin
+                        cnt <= cnt - 6'd1;
+                    end
+                end
+            end
+        end
+    end
+endmodule
+
 module awb  #(   
     parameter IMG_HEIGHT = 1080,
     parameter IMG_WIDTH  = 1920
@@ -327,24 +414,73 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
                            ????                                       
 *****************************************************************/
 
-  wire [47:0] S_div_quotient;
+  // ---- 2026-11-12: 除法器改串行 -------------------------------------------
+  // 原来这里是一个 50 级流水线除法器 IP，**每个有效像素拍都启动一次**。
+  // 而增益已经改成"整帧恒定"（见下面 in_r_r1 那段），一帧其实只需要
+  // R/B 各算一次 —— 消隐期有几千个周期，那个高吞吐结构完全是浪费，
+  // 而且是整个设计里最大的一块面积。
+  //
+  // 现在：tuser 那一拍锁存整帧累加和（此刻 sum_* 还没被帧首复位），
+  // 用串行移位减法各算一次，42 拍出结果，两色共 84 拍，消隐期远远够。
   wire        S_div_done;
-  reg         S_div_sel;
-  reg  [49:0] S_div_sel_pipe;
+  wire [19:0] S_div_quo;
+  wire        S_div_busy;
+  reg         S_div_start;
+  reg  [41:0] S_div_num;
+  reg  [25:0] S_div_den;
+  reg  [25:0] S_end_r, S_end_g, S_end_b;
+  reg         S_calc;          // 有一对增益待重算
+  reg         S_calc_sel;      // 0 = 正在算 R，1 = 正在算 B
+  reg  [19:0] S_quo_r;
 
-  // The generated divider accepts one request per clock and has an exact
-  // 50-cycle start-to-done pipeline. Alternate R and B requests so one IP
-  // replaces two identical dividers without changing either division formula.
+  // sum_* 是 32 位累加器，但 720p 一帧最多累 230400 个像素 × 255，
+  // 上界 58,752,001 < 2^26 —— 只取低 26 位参与除法，省掉没用的高位。
+  wire [31:0] S_sum_r32 = sum_r[0];
+  wire [31:0] S_sum_g32 = sum_g[0];
+  wire [31:0] S_sum_b32 = sum_b[0];
+  wire [25:0] S_sum_r = S_sum_r32[25:0];
+  wire [25:0] S_sum_g = S_sum_g32[25:0];
+  wire [25:0] S_sum_b = S_sum_b32[25:0];
+
   always @(posedge I_clk or negedge I_rst_n) begin
       if (!I_rst_n) begin
-          S_div_sel      <= 1'b0;
-          S_div_sel_pipe <= 50'd0;
+          S_end_r <= 26'd0; S_end_g <= 26'd0; S_end_b <= 26'd0;
+          S_calc  <= 1'b0;  S_calc_sel <= 1'b0;
+          S_div_start <= 1'b0; S_quo_r <= 20'h10000;
+          S_div_num <= 42'd0;  S_div_den <= 26'd0;
       end else begin
-          S_div_sel_pipe <= {S_div_sel_pipe[48:0], S_div_sel};
-          if (I_tvalid_r1)
-              S_div_sel <= ~S_div_sel;
+          S_div_start <= 1'b0;
+          if (I_tuser) begin
+              S_end_r <= S_sum_r[25:0];
+              S_end_g <= S_sum_g[25:0];
+              S_end_b <= S_sum_b[25:0];
+              S_calc  <= 1'b1;
+              S_calc_sel <= 1'b0;
+          end else if (S_div_done) begin
+              if (!S_calc_sel) begin
+                  S_quo_r    <= S_div_quo;     // R 的结果先存着
+                  S_calc_sel <= 1'b1;          // 接着算 B
+              end else begin
+                  S_calc <= 1'b0;              // 两个都算完
+              end
+          end else if (S_calc && !S_div_busy && !S_div_start) begin
+              S_div_num   <= {S_end_g, 16'd0};             // (sum_g << 16)
+              S_div_den   <= S_calc_sel ? S_end_b : S_end_r;
+              S_div_start <= 1'b1;
+          end
       end
   end
+
+  awb_div_serial u_div (
+      .I_clk   (I_clk      ),
+      .I_rst_n (I_rst_n    ),
+      .I_start (S_div_start),
+      .I_num   (S_div_num  ),
+      .I_den   (S_div_den  ),
+      .O_quo   (S_div_quo  ),
+      .O_done  (S_div_done ),
+      .O_busy  (S_div_busy )
+  );
 
 
 
@@ -353,15 +489,7 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
 *****************************************************************/
     //??????????????????
 
-      divider div_gen_G_RB_r1 (
-          .clk(I_clk),  // input wire aclk
-          .rst(!I_rst_n),
-          .start(I_tvalid_r1),
-          .denominator(S_div_sel ? sum_b[0] : sum_r[0]),
-          .numerator({sum_g[0],16'd0}),  // input wire [47 : 0] s_axis_dividend_tdata
-          .quotient(S_div_quotient),
-          .done(S_div_done)
-      );
+      // 2026-11-12: 旧的 50 级流水线除法器 IP 已删除，改用上面的 awb_div_serial。
 
      
     signal_delay #(
@@ -394,28 +522,21 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
     // 累加和 —— 同一帧里画面上半部分和下半部分拿到的增益不一样（累加和从帧首
     // 开始累，越往后越接近真实平均），静态场景表现为从上到下的色偏渐变。
     //
-    // 参考实现的做法是"帧末算一次、整帧恒定"：这里用最小改动达到同样效果 ——
-    //   · 只在消隐期（!I_tvalid_r1）接受除法结果。最后一个有效像素的除法
-    //     恰好在 50 拍后、也就是消隐期里完成，那时累加和已经是整帧的；
-    //   · 去掉 tuser 时把增益复位成 1.0 的动作，否则刚算好的增益会被抹掉。
-    // 于是每一帧的增益在整帧内恒定，且用的是上一整帧的统计。
+    // 参考实现的做法是"帧末算一次、整帧恒定"，这里完全照这个思路：
+    //   · tuser 那一拍锁存整帧累加和（此刻 sum_* 还没被帧首复位）；
+    //   · 用串行除法器在消隐期把 R/B 两个增益各算一次；
+    //   · 算完就停，整帧内不再变。
+    // 串行除法器自带饱和（商 >= 2^20 时输出 0xFFFFF），所以这里不用再判溢出。
     always @(posedge I_clk or negedge I_rst_n)begin 
         if(!I_rst_n)begin
             in_r_r1 <= 20'h10000;
             in_b_r1 <= 20'h10000;
         end
-        else if(S_div_done && !I_tvalid_r1)begin
-            if(!S_div_sel_pipe[49]) begin
-                if(|S_div_quotient[47:20])
-                    in_r_r1 <= 20'hfffff;
-                else
-                    in_r_r1 <= S_div_quotient[19:0];
-            end else begin
-                if(|S_div_quotient[47:20])
-                    in_b_r1 <= 20'hfffff;
-                else
-                    in_b_r1 <= S_div_quotient[19:0];
-            end
+        else if(S_div_done)begin
+            if(!S_calc_sel)
+                in_r_r1 <= S_div_quo;
+            else
+                in_b_r1 <= S_div_quo;
         end
     end
 
