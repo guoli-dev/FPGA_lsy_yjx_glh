@@ -527,6 +527,17 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
     //   · 用串行除法器在消隐期把 R/B 两个增益各算一次；
     //   · 算完就停，整帧内不再变。
     // 串行除法器自带饱和（商 >= 2^20 时输出 0xFFFFF），所以这里不用再判溢出。
+    // 2026-11-12: 增益离群保护。
+    //
+    // 现象：把一整屏红色对着镜头，一开始正常，几帧后**变成全白**。
+    // 这是灰世界 AWB 的经典失效 —— 画面被单一颜色占满时，算法认为"光源偏红"，
+    // 把 R 通道一路压下去试图中和它，红块就被洗成白/灰白。
+    //
+    // 判据：正常的白平衡修正不会超过 ±50%（Q16 的 0.5~1.5）。
+    // 算出超出这个范围的增益，说明是场景被某个颜色主导、而不是光源色偏 ——
+    // 这时**保持上一帧的增益不动**，而不是照着错误统计去中和它。
+    wire gain_outlier = (S_div_quo < 20'h08000) || (S_div_quo > 20'h18000);
+
     always @(posedge I_clk or negedge I_rst_n)begin 
         if(!I_rst_n)begin
             in_r_r1 <= 20'h10000;
@@ -534,9 +545,9 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
         end
         else if(S_div_done)begin
             if(!S_calc_sel)
-                in_r_r1 <= S_div_quo;
+                in_r_r1 <= gain_outlier ? in_r_r1 : S_div_quo;
             else
-                in_b_r1 <= S_div_quo;
+                in_b_r1 <= gain_outlier ? in_b_r1 : S_div_quo;
         end
     end
 
