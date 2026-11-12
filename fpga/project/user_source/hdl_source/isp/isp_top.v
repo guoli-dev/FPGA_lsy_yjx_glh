@@ -225,7 +225,7 @@ color_detect_96 #(
                                  //   不再是包围盒的硬门 —— 零散点会变成像素数极少的
                                  //   轨迹, 帧末被 AREA_TH 直接淘汰。所以它可以从 4
                                  //   退回 3/2, 不会再把远处的绿目标整帧门掉。
-    .MIN_BRIGHT        (70  ),
+    .MIN_BRIGHT        (95  ),   // 2026-11-12: 70 -> 95，暗棕/暗红在亮度上先挡一道
     .AREA_TH           (300 ),   // **单个连通域**小于 300 像素不报
     .MIN_RUN           (3   ),   // 2026-10-19: 2->3, horizontal erosion for the bbox only
     .EDGE_MASK_X       (80  ),
@@ -720,10 +720,19 @@ module color_detect_96 #(
     // Skin sits at r-g ~= 25% of r, i.e. exactly on the old threshold, so
     // hands were being boxed as red. 31.25% clears skin and still catches
     // saturated red objects. Shift-add only, no DSP.
+    //
+    // 2026-11-12 上板照片：31.25% 仍然会把**深棕/暗红**的物件框成红色
+    // （桌上一根深棕色腕带、以及暗红色书皮）。棕色本质就是"饱和度和亮度
+    // 都不够的红"：
+    //     棕色 (110,70,60)  -> (r-b)/r = 45%
+    //     饱和红 (220,60,50) -> (r-b)/r = 77%
+    // 两者差 3 倍多，而 31.25% 的门限只卡在中间偏下，所以棕色照样过。
+    // 提高饱和门限到 50%（r>>1，比原来的 5r/16 还省一个加法器），
+    // 棕色被挡在外面，饱和红仍有余量。配合把 MIN_BRIGHT 提到 95 一起用。
     function [7:0] f_rmar;
         input [7:0] r;
         begin
-            f_rmar = ({3'b0, r} + {3'b0, r, 2'b0}) >> 4;    // (r + 4r) >> 4
+            f_rmar = r >> 1;                                // 50% 饱和度门限
         end
     endfunction
     function is_red;
