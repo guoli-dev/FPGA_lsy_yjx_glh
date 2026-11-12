@@ -2271,32 +2271,14 @@ wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 //   （≈320 slice），还留下一条扇出 1153 的地址线 pf_addr[4]，布线时是拥塞源。
 //   所以回到真实深度：320 x 36 = 11520 bit/块，两块 ≈ 640 LUT，这是 TD 的取舍，
 //   接受它。（真要用 ERAM 必须直接例化 ERAM 原语，那是另一件事。）
-// ★★ 2026-11-12 最终结论（构建日志 SYN-5105 直接指出）：
-//     "Failed infer ram ... as bram because **cannot match any writemode**.
-//      Implement the ram with dram."
-//   也就是说 TD 根本没在做"深度 vs 容量"的选择，而是**写模式匹配不上**。
-//   原因是我加双门限滞回时，把强边位也塞进了这个 RAM：
-//        r0 <= mem0[pf_addr];                        // 读
-//        mem0[cur_addr] <= {e0,e1,e2,e3, bot_word};  // 写
-//   而 e0..e3 是由 r0/r1 组合算出来的（Sobel -> 比较），于是**RAM 的写数据
-//   依赖它自己的读输出**，任何标准写模式都套不上，只能退回分布式 RAM。
-//   之前"把深度拉到 1024 逼它进 ERAM"的判断是错的，白花了 640 LUT。
-//
-//   修法：把强边位从主 RAM 里拆出去。
-//     · mem0/mem1 只存灰度，写数据 = bot_word（来自 I_tdata，与读输出无关）
-//       -> 标准简单双口 RAM，可以进 ERAM；
-//     · 强边位另存一个 4 bit 宽的小数组 sb0（320x4 = 1280 bit），
-//       就算被综合成分布式 RAM 也只有几十个 LUT，可以接受。
-(* ram_style = "bram" *) reg [31:0] mem0 [0:LAST];   // 第 y-1 行灰度
-(* ram_style = "bram" *) reg [31:0] mem1 [0:LAST];   // 第 y-2 行灰度
-reg [3:0] sb0 [0:LAST];                              // 第 y-1 行强边位（bit3 = 最左像素）
+(* ram_style = "bram" *) reg [35:0] mem0 [0:LAST];   // {强边位[3:0], 第 y-1 行灰度}
+(* ram_style = "bram" *) reg [35:0] mem1 [0:LAST];   // {强边位[3:0], 第 y-2 行灰度}
 
 reg [10:0] x_grp;        // 组号 0..319
 reg [9:0]  y_pos;        // 行号 0..719
 
-reg [31:0] r0, r1;       // 同步读输出
-reg [31:0] fwd0, fwd1;   // 写转发值
-reg [3:0]  rs0, fwds0;   // 强边位的读输出 / 写转发
+reg [35:0] r0, r1;       // 同步读输出
+reg [35:0] fwd0, fwd1;   // 写转发值
 reg        col_l;        // 上一拍是否发生预取/写地址冲突
 
 // 强边位（本组的 4 个像素），后面才赋值，这里先声明给写端口用
@@ -2308,40 +2290,35 @@ wire [10:0] cur_addr = tuser_v ? 11'd0 : x_grp;
 // 预取：这一拍给出「下一拍才会用到」的组号
 wire [10:0] pf_addr  = (!de || cur_addr == LAST) ? 11'd0 : (cur_addr + 11'd1);
 wire        col_hit  = de && (pf_addr == cur_addr);
-wire [31:0] mid_word = col_l ? fwd0 : r0;   // 第 y-1 行（本组）
-wire [31:0] top_word = col_l ? fwd1 : r1;   // 第 y-2 行（本组）
-wire [31:0] mid_gray = mid_word;            // 第 y-1 行灰度
-wire [31:0] top_gray = top_word;            // 第 y-2 行灰度
-wire [3:0]  mid_sb   = col_l ? fwds0 : rs0; // 第 y-1 行强边位
+wire [35:0] mid_word = col_l ? fwd0 : r0;   // 第 y-1 行（本组）
+wire [35:0] top_word = col_l ? fwd1 : r1;   // 第 y-2 行（本组）
+wire [31:0] mid_gray = mid_word[31:0];      // 第 y-1 行灰度
+wire [31:0] top_gray = top_word[31:0];      // 第 y-2 行灰度
+wire [3:0]  mid_sb   = mid_word[35:32];     // 第 y-1 行强边位，bit3 = 最左像素
 
 always @(posedge I_clk or negedge I_rst_n) begin
     if (!I_rst_n) begin
         x_grp <= 11'd0;
         y_pos <= 10'd0;
-        r0    <= 32'd0;
-        r1    <= 32'd0;
-        fwd0  <= 32'd0;
-        fwd1  <= 32'd0;
-        rs0   <= 4'd0;
-        fwds0 <= 4'd0;
+        r0    <= 36'd0;
+        r1    <= 36'd0;
+        fwd0  <= 36'd0;
+        fwd1  <= 36'd0;
         col_l <= 1'b0;
     end else begin
         // ---- 预取读：地址是下一拍要用的组号 ----
-        r0  <= mem0[pf_addr];
-        r1  <= mem1[pf_addr];
-        rs0 <= sb0[pf_addr];
+        r0 <= mem0[pf_addr];
+        r1 <= mem1[pf_addr];
 
         // ---- 写转发：万一回绕撞地址，用写数据旁路 ----
         col_l <= col_hit;
-        fwd0  <= bot_word;
+        fwd0  <= {e0,e1,e2,e3, bot_word};
         fwd1  <= mid_word;
-        fwds0 <= {e0,e1,e2,e3};
 
-        // ---- 写：灰度走 ERAM，强边位走小数组 ----
+        // ---- 写：本行（灰度 + 强边位）进 mem0，第 y-1 行滚动进 mem1 ----
         if (de) begin
-            mem0[cur_addr] <= bot_word;
+            mem0[cur_addr] <= {e0,e1,e2,e3, bot_word};
             mem1[cur_addr] <= mid_word;
-            sb0[cur_addr]  <= {e0,e1,e2,e3};
         end
 
         if (de) begin
