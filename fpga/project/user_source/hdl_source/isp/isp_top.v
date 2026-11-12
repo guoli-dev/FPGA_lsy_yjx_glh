@@ -2056,7 +2056,7 @@ module color_box_hold_96 #(
     input              I_rst_n,
     input              I_tuser,       // 帧边界（gam_tuser）
     input      [191:0] I_boxes,       // 3 色 x 64bit rank1
-    output reg [191:0] O_boxes
+    output wire[191:0] O_boxes
 );
 
     genvar gi;
@@ -2089,11 +2089,10 @@ module color_box_hold_96 #(
             end
         end
 
-        // 坐标保持 keep，只有 valid 位跟着滞回状态走
-        always @(posedge I_clk or negedge I_rst_n) begin
-            if (!I_rst_n) O_boxes[gi*64 +: 64] <= 64'd0;
-            else          O_boxes[gi*64 +: 64] <= {keep[63:43], ok, keep[41:0]};
-        end
+        // 坐标保持 keep，只有 valid 位跟着滞回状态走。
+        // 用组合输出而不是再打一拍 —— keep 本身就是寄存器，输出已经稳定，
+        // 多一级只会白花 192 个 FF（上一版实测 u_boxhold 花了 395 个 seq）。
+        assign O_boxes[gi*64 +: 64] = {keep[63:43], ok, keep[41:0]};
     end endgenerate
 
 endmodule
@@ -2178,8 +2177,15 @@ wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 //
 // ★ 属性值：TD 只认 ram_style = "bram"，不认 "block"（TD 自带 IP 的写法）。
 //   写 "block" 会被静默忽略，两块缓冲摊成 512 个 DRAM LUT。
-(* ram_style = "bram" *) reg [31:0] mem0 [0:LAST];   // 第 y-1 行
-(* ram_style = "bram" *) reg [31:0] mem1 [0:LAST];   // 第 y-2 行
+//
+// ★ 2026-11-12 实测：**就算写 "bram"，TD 也不会把 320 深的 RAM 映射到 ERAM**
+//   （构建报告 u_edge：eram=0、dram lut=512）。TD 是按**声明深度**做资源决策的，
+//   320x32 = 10240 bit 太小，它就给了分布式 RAM。
+//   对策：把声明深度拉到 1024（实际只用 0..319）。1024x32 = 32768 bit，用分布式
+//   RAM 实现要 ~800 个 LUT，综合器只能走 ERAM；每块占 2 个 ERAM，两块共 4 块
+//   （当前 ERAM 80/108，放得下）。地址只用低 9 位，高 2 位恒 0。
+(* ram_style = "bram" *) reg [31:0] mem0 [0:1023];   // 第 y-1 行，只用 0..319
+(* ram_style = "bram" *) reg [31:0] mem1 [0:1023];   // 第 y-2 行，只用 0..319
 
 reg [10:0] x_grp;        // 组号 0..319
 reg [9:0]  y_pos;        // 行号 0..719
