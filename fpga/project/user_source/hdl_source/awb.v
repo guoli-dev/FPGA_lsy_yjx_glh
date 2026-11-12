@@ -224,9 +224,9 @@ localparam        FIXED_WB_ONLY    = 1'b0;  // 诊断开关, 定位完保持 0
   reg  [31:0]         sum_b[0:3];
 
   
-  reg  [95:0]        data_d0 ;
-  reg                valid_d0;
-  reg                I_tuser_r0;
+  wire  [95:0]        data_d0 ;
+  wire                valid_d0;
+  wire                I_tuser_r0;    
 
   reg                 I_tuser_r1;
 
@@ -492,24 +492,21 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
       // 2026-11-12: 旧的 50 级流水线除法器 IP 已删除，改用上面的 awb_div_serial。
 
      
-    // 2026-11-13: 原来这里是一条 50 拍 × 96 位的延迟线 (signal_delay)，
-    // 唯一用途是让像素和"生成式除法器 IP 的 50 拍延迟"对齐。
-    // 现在增益整帧恒定（不需要对齐）、除法器换成串行（没有 50 拍延迟），
-    // 这条延迟线是纯浪费：它内部的 ERAM IP 是 96 位 × 2048 深，
-    // 实际只用 50 个位置，却占掉 **10 块 ERAM**（构建报告 u_awb 的 eram=10）。
-    // 改成 1 拍寄存，valid/tuser 与数据的对齐关系保持不变。
-    // 代价：AWB 整体延迟减少 49 拍 —— 所有下游分支一起平移，相对对齐不变。
-    always @(posedge I_clk or negedge I_rst_n) begin
-        if (!I_rst_n) begin
-            data_d0    <= 96'd0;
-            valid_d0   <= 1'b0;
-            I_tuser_r0 <= 1'b0;
-        end else begin
-            data_d0    <= I_tdata_d1;
-            valid_d0   <= I_tvalid_r1;
-            I_tuser_r0 <= I_tuser;
-        end
-    end
+    signal_delay #(
+        .IMG_HEIGHT   (IMG_HEIGHT),
+        .IMG_WIDTH    (IMG_WIDTH ),
+        .DATA_WIDTH   (96  ),
+        .DELAY_CYCLE  (50)
+    )signal_delay_d (
+        /*input                       */ .I_clk  (I_clk  ),
+        /*input                       */ .I_rst_n(I_rst_n),
+        /*input                       */ .I_tuser(I_tuser),  //synthesis keep 
+        /*input  wire                 */ .I_valid(I_tvalid_r1),  //synthesis keep 
+        /*input  wire [DATA_WIDTH-1:0]*/ .I_data (I_tdata_d1 ),   //synthesis keep 
+        /*output wire                 */ .O_valid(valid_d0   ),  //synthesis keep 
+        /*output wire [DATA_WIDTH-1:0]*/ .O_data (data_d0    ),   //synthesis keep 
+        /*output wire                 */ .O_tuser(I_tuser_r0 )
+    );
 
     
 
