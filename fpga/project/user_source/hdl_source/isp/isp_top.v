@@ -2444,7 +2444,11 @@ wire        win_ok = (y_pos >= 10'd2) && (cur_addr != 11'd0);
 //   上一行（mem0 里存的 mid 强边位）：pixel i-1 / i / i+1
 //   本行：左邻 pixel i-1
 wire [11:0] th_ext = {1'b0, I_edge_th};
-wire [11:0] lo_ext = {2'b0, I_edge_th[10:1]};   // 强门限的一半
+// 2026-11-12: 弱门限从"强门限的一半"提到 5/8。
+// 原来 60/30 —— 弱边太容易存活（只要旁边有一个强边就留下），纹理区仍然出噪点。
+// 改成 5/8（60 -> 37）：弱边要更接近强边才被连通性救回来，
+// 孤立的纹理响应更容易被剔掉。I_edge_th 仍只调一个数，弱门限自动跟着走。
+wire [11:0] lo_ext = {2'b0, I_edge_th[10:1]} + {3'b0, I_edge_th[10:3]};   // 5/8 强门限
 
 assign e0 = win_ok && (mag0 >= th_ext);
 assign e1 = win_ok && (mag1 >= th_ext);
