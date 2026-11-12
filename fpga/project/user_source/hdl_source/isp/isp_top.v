@@ -2089,8 +2089,14 @@ wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 //   par=1: memA = 第 y-2 行(top)，memB = 第 y-1 行(mid)，本行写 memA
 // 写比读晚两拍，读和写永远落在不同地址上，不会撞同一个 word。
 // 行缓存不做复位：复位循环会把它们变成寄存器，前两行由 win_ok 屏蔽掉。
-(* ram_style = "block" *) reg [31:0] memA [0:LAST];
-(* ram_style = "block" *) reg [31:0] memB [0:LAST];
+//
+// ★ 2026-11-12 属性值写错导致强制失败：TD（Tang Dynasty）只认
+//   `ram_style = "bram"`，**不认 "block"**。证据：TD 自带 IP 的写法是
+//   (*ram_style="bram"*)（arch 目录的 memory_spram.v、atmr_memory.v）。
+//   旧版本写 "block"，工具静默忽略，于是 320x32 两块缓冲摊成 512 个 DRAM LUT
+//   （phy.area 里 u_edge 的 eram=0、dram lut=512）。
+(* ram_style = "bram" *) reg [31:0] memA [0:LAST];
+(* ram_style = "bram" *) reg [31:0] memB [0:LAST];
 
 reg [10:0] x_grp;        // 组号 0..319
 reg [9:0]  y_pos;        // 行号 0..719
