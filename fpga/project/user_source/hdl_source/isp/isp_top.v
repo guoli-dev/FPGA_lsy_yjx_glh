@@ -279,12 +279,9 @@ color_detect_96 #(
 // 不让 mux 直接串上去 (ISP 域余量本来就紧)。
 reg  [95:0] raw_tdata_d;
 reg         raw_tuser_d, raw_tvalid_d, raw_tlast_d;
-// 2026-11-11: edge_detect_96 改成同步读行缓存后，延迟从一拍变成两拍。
-// 原图分支必须跟着再延一拍，否则卡通模式的描边会和色块错位 4 个像素。
-reg  [95:0] raw_tdata_d2;
-reg         raw_tuser_d2, raw_tvalid_d2, raw_tlast_d2;
 wire        edge_tlast, edge_tuser, edge_tvalid, edge_tready;
 wire [95:0] edge_tdata;
+wire [3:0]  edge_strong;
 // sel_* 必须是 reg —— 它们在下面的 always 里被赋值 (wire 不能过程赋值, 会报 HDL-8007)
 reg         sel_tuser, sel_tvalid, sel_tlast;
 reg  [95:0] sel_tdata;
@@ -296,20 +293,12 @@ always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
         raw_tuser_d  <= 1'b0;
         raw_tvalid_d <= 1'b0;
         raw_tlast_d  <= 1'b0;
-        raw_tdata_d2  <= 96'd0;
-        raw_tuser_d2  <= 1'b0;
-        raw_tvalid_d2 <= 1'b0;
-        raw_tlast_d2  <= 1'b0;
     end else begin
-        // 原图分支延两拍, 与 edge_detect_96 的两拍延迟对齐
+        // 原图分支延一拍, 与 edge_detect_96 的一拍延迟对齐
         raw_tdata_d  <= demo_tdata;
         raw_tuser_d  <= gam_tuser;
         raw_tvalid_d <= gam_tvalid;
         raw_tlast_d  <= gam_tlast;
-        raw_tdata_d2  <= raw_tdata_d;
-        raw_tuser_d2  <= raw_tuser_d;
-        raw_tvalid_d2 <= raw_tvalid_d;
-        raw_tlast_d2  <= raw_tlast_d;
         // 只在帧边界换模式 —— 上游 awb 的 O_tuser 是组合直通、O_tvalid 延两拍,
         // 所以这里只认 gam_tuser, 绝不要求它与 tvalid 同拍。
         if (gam_tuser) S_mode <= I_mode;
@@ -332,22 +321,23 @@ edge_detect_96 #(
     .O_tlast (edge_tlast ),
     .O_tuser (edge_tuser ),
     .O_tdata (edge_tdata ),
+    .O_strong(edge_strong),
     .O_tvalid(edge_tvalid),
     .O_tready(edge_tready)
 );
 
 // ---- 卡通化: 区域填充 + 边缘描边 (2026-10-10) -----------------------------
 // 对应**基础扩展要求(1)「边缘提取与区域填充」**。纯组合, 0 寄存器 / 0 BRAM / 0 DSP。
-// I_color 用原图(raw_tdata_d2), I_edge 用 edge_detect_96 的输出 —— 两者本来就同拍
-// (都在 gamma+2), 所以不需要任何额外对齐逻辑。
+// I_color 用原图(raw_tdata_d), I_strong 用 edge_detect_96 的强边输出 —— 两者本来就同拍
+// (都在 gamma+1), 所以不需要任何额外对齐逻辑。
 wire [95:0] cartoon_tdata;
 cartoon_effect_96 #(
     .QUANT_BITS(3)              // 每通道 8 级，共 512 色，保留色块辨识所需的颜色层次。
 ) u_cartoon (
     .I_clk    (axi4s_video_aclk),
     .I_rst_n  (I_rst_n),
-    .I_color  (raw_tdata_d2),   // 原图 (已延两拍)
-    .I_edge   (edge_tdata ),    // 边缘图 (同拍)
+    .I_color  (raw_tdata_d),    // 原图 (已延一拍)
+    .I_strong (edge_strong),    // 强边标志 (同拍)
     .O_cartoon(cartoon_tdata)
 );
 
@@ -355,7 +345,7 @@ cartoon_effect_96 #(
 // (2 原来是 SEG 分割模式的占位, 一直回落到原图; 2026-10-10 改成卡通化,
 //  直接补上基础扩展要求(1) 的"区域填充"。)
 wire [95:0] S_mux_tdata = (S_mode == 2'd1) ? edge_tdata    :
-                          (S_mode == 2'd2) ? cartoon_tdata : raw_tdata_d2;
+                          (S_mode == 2'd2) ? cartoon_tdata : raw_tdata_d;
 
 always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
     if (!I_rst_n) begin
@@ -365,9 +355,9 @@ always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
         sel_tlast  <= 1'b0;
     end else begin
         sel_tdata  <= S_mux_tdata;
-        sel_tuser  <= raw_tuser_d2;
-        sel_tvalid <= raw_tvalid_d2;
-        sel_tlast  <= raw_tlast_d2;
+        sel_tuser  <= raw_tuser_d;
+        sel_tvalid <= raw_tvalid_d;
+        sel_tlast  <= raw_tlast_d;
     end
 end
 
@@ -1710,10 +1700,18 @@ module color_box_ccl_96 #(
     wire [10:0] base_x  = {x_grp, 2'b00};
     wire [2:0]  hit_cnt = I_hit[0] + I_hit[1] + I_hit[2] + I_hit[3];
 
-    wire in_field = (base_x >= EDGE_MASK_X) &&
-                    (base_x <  (IMG_WIDTH  - EDGE_MASK_X)) &&
-                    (y_pos  >= EDGE_MASK_Y) &&
-                    (y_pos  <  (IMG_HEIGHT - EDGE_MASK_Y));
+    // 边缘屏蔽 —— 只屏蔽四角，不是整圈（2026-11-12 从 color_box_96 回填）
+    //
+    // CCL 重写时这里退回了"整圈屏蔽"：只要落在横向或纵向边距里就整片不采信，
+    // 屏蔽掉 1 - (1120*630)/(1280*720) = 23.4% 的画面。
+    // 而它要治的只是四角镜头色阴影，实际只涉及 4*80*45/(1280*720) = 1.56%，
+    // 代价被放大了 15 倍；而且 in_field 同时门控组命中，完全落在边距环里的目标
+    // 就是**永久性盲区**。
+    // 改成只有同时在横向边距和纵向边距里才算四角，四条边的中点重新参与检测；
+    // 实测（color_box_96 时期）贴边色块不再丢框。零额外 LUT。
+    wire in_h_margin = (base_x <  EDGE_MASK_X) || (base_x >= (IMG_WIDTH  - EDGE_MASK_X));
+    wire in_v_margin = (y_pos  <  EDGE_MASK_Y) || (y_pos  >= (IMG_HEIGHT - EDGE_MASK_Y));
+    wire in_field    = !(in_h_margin && in_v_margin);
 
     wire grp_act = I_tvalid && (hit_cnt >= MIN_RUN) && in_field;
 
@@ -2060,6 +2058,7 @@ module edge_detect_96 #(
     output reg          O_tlast,
     output reg          O_tuser,
     output reg [95:0]   O_tdata,
+    output reg [3:0]    O_strong,
     output reg          O_tvalid,
     output              O_tready
 );
@@ -2084,95 +2083,65 @@ wire [7:0] gray3 = {2'b0,pix3[23:18]} + {1'b0,pix3[15:9]} + {2'b0,pix3[7:2]};
 wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 
 // ---------------------------------------------------------------- 行缓存
-// 两块 320x32 的缓冲，按行奇偶交换角色：
-//   par=0: memA = 第 y-1 行(mid)，memB = 第 y-2 行(top)，本行写 memB
-//   par=1: memA = 第 y-2 行(top)，memB = 第 y-1 行(mid)，本行写 memA
-// 写比读晚两拍，读和写永远落在不同地址上，不会撞同一个 word。
-// 行缓存不做复位：复位循环会把它们变成寄存器，前两行由 win_ok 屏蔽掉。
+// 两块 320x32 的缓冲：mem0 = 第 y-1 行，mem1 = 第 y-2 行。
 //
-// ★ 2026-11-12 属性值写错导致强制失败：TD（Tang Dynasty）只认
-//   `ram_style = "bram"`，**不认 "block"**。证据：TD 自带 IP 的写法是
-//   (*ram_style="bram"*)（arch 目录的 memory_spram.v、atmr_memory.v）。
-//   旧版本写 "block"，工具静默忽略，于是 320x32 两块缓冲摊成 512 个 DRAM LUT
-//   （phy.area 里 u_edge 的 eram=0、dram lut=512）。
-(* ram_style = "bram" *) reg [31:0] memA [0:LAST];
-(* ram_style = "bram" *) reg [31:0] memB [0:LAST];
+// 同步读天生晚一拍，这里用「预取下一拍才会用到的地址」把它补回来：
+// 这一拍给地址，下一拍读出的数据正好对应当前像素，主通路**零额外延迟**，
+// 模块总延迟仍是 1 拍（不需要外部再补一条延迟链）。
+// 回绕时预取地址可能撞上写地址，用写转发旁路，不依赖 RAM 的 read-during-write 模式。
+//
+// ★ 属性值：TD 只认 ram_style = "bram"，不认 "block"（TD 自带 IP 的写法）。
+//   写 "block" 会被静默忽略，两块缓冲摊成 512 个 DRAM LUT。
+(* ram_style = "bram" *) reg [31:0] mem0 [0:LAST];   // 第 y-1 行
+(* ram_style = "bram" *) reg [31:0] mem1 [0:LAST];   // 第 y-2 行
 
 reg [10:0] x_grp;        // 组号 0..319
 reg [9:0]  y_pos;        // 行号 0..719
-reg        par;          // 行奇偶
 
-wire       tuser_v  = I_tuser && I_tvalid;
+reg [31:0] r0, r1;       // 同步读输出
+reg [31:0] fwd0, fwd1;   // 写转发值
+reg        col_l;        // 上一拍是否发生预取/写地址冲突
+
+wire        de       = I_tvalid;
+wire        tuser_v  = I_tuser && I_tvalid;
 wire [10:0] cur_addr = tuser_v ? 11'd0 : x_grp;
-
-reg [31:0] a_q, b_q;             // 两块缓存的同步读输出（打一拍）
-reg [31:0] bot_word_d;           // 本组像素延一拍，与读出的数据对齐
-reg [31:0] bot_word_d2;          // 再延一拍，给写端口用
-reg [10:0] x_d;
-reg [9:0]  y_d;
-reg        u_d, l_d, v_d, par_d;
-reg [10:0] addr_d1, addr_d2;
-reg        par_d1, par_d2, v_d2;
-
-// par_d 是行奇偶延后一拍，和 a_q/b_q 属于同一拍，用它选 mid/top 才不会错行。
-wire [31:0] mid_word = par_d ? b_q : a_q;   // 第 y-1 行
-wire [31:0] top_word = par_d ? a_q : b_q;   // 第 y-2 行
+// 预取：这一拍给出「下一拍才会用到」的组号
+wire [10:0] pf_addr  = (!de || cur_addr == LAST) ? 11'd0 : (cur_addr + 11'd1);
+wire        col_hit  = de && (pf_addr == cur_addr);
+wire [31:0] mid_word = col_l ? fwd0 : r0;   // 第 y-1 行（本组）
+wire [31:0] top_word = col_l ? fwd1 : r1;   // 第 y-2 行（本组）
 
 always @(posedge I_clk or negedge I_rst_n) begin
     if (!I_rst_n) begin
-        x_grp      <= 11'd0;
-        y_pos      <= 10'd0;
-        par        <= 1'b0;
-        a_q        <= 32'd0;
-        b_q        <= 32'd0;
-        bot_word_d <= 32'd0;
-        bot_word_d2<= 32'd0;
-        x_d        <= 11'd0;
-        y_d        <= 10'd0;
-        u_d        <= 1'b0;
-        l_d        <= 1'b0;
-        v_d        <= 1'b0;
-        par_d      <= 1'b0;
-        addr_d2    <= 11'd0;
-        par_d1     <= 1'b0;
-        par_d2     <= 1'b0;
-        v_d2       <= 1'b0;
+        x_grp <= 11'd0;
+        y_pos <= 10'd0;
+        r0    <= 32'd0;
+        r1    <= 32'd0;
+        fwd0  <= 32'd0;
+        fwd1  <= 32'd0;
+        col_l <= 1'b0;
     end else begin
-        // ---- 同步读：两块缓存每个时钟都无条件读，打一拍后由 par_d 选角色 ----
-        // 不写 if/else 分支，综合器才容易把 memA/memB 推断成真正的 ERAM。
-        a_q <= memA[cur_addr];
-        b_q <= memB[cur_addr];
+        // ---- 预取读：地址是下一拍要用的组号 ----
+        r0 <= mem0[pf_addr];
+        r1 <= mem1[pf_addr];
 
-        // ---- 写：晚两拍，写的是本行第 y 行数据，覆盖掉已经读完的第 y-2 行 ----
-        if (v_d2) begin
-            if (par_d2) memA[addr_d2] <= bot_word_d2;
-            else        memB[addr_d2] <= bot_word_d2;
+        // ---- 写转发：万一回绕撞地址，用写数据旁路 ----
+        col_l <= col_hit;
+        fwd0  <= bot_word;
+        fwd1  <= mid_word;
+
+        // ---- 写：本行进 mem0，第 y-1 行滚动进 mem1 ----
+        if (de) begin
+            mem0[cur_addr] <= bot_word;
+            mem1[cur_addr] <= mid_word;
         end
 
-        bot_word_d  <= bot_word;
-        bot_word_d2 <= bot_word_d;
-        // 写地址/行奇偶也要延两拍，和 bot_word_d2 属于同一拍，否则会把像素写错行。
-        addr_d1     <= cur_addr;
-        addr_d2     <= addr_d1;
-        par_d1      <= par;
-        par_d2      <= par_d1;
-        v_d2        <= v_d;
-
-        x_d   <= cur_addr;
-        y_d   <= y_pos;
-        u_d   <= I_tuser;
-        l_d   <= I_tlast;
-        v_d   <= I_tvalid;
-        par_d <= par;
-
-        if (I_tvalid) begin
+        if (de) begin
             if (I_tuser) begin
                 x_grp <= 11'd1;
                 y_pos <= 10'd0;
-                par   <= 1'b0;
             end else if (cur_addr == LAST) begin
                 x_grp <= 11'd0;
-                par   <= ~par;
                 y_pos <= (y_pos == IMG_HEIGHT - 1) ? 10'd0 : (y_pos + 10'd1);
             end else begin
                 x_grp <= x_grp + 11'd1;
@@ -2190,10 +2159,10 @@ always @(posedge I_clk or negedge I_rst_n) begin
         t_c2 <= 8'd0; t_c1 <= 8'd0;
         m_c2 <= 8'd0; m_c1 <= 8'd0;
         b_c2 <= 8'd0; b_c1 <= 8'd0;
-    end else if (v_d) begin
+    end else if (I_tvalid) begin
         t_c2 <= top_word[15: 8]; t_c1 <= top_word[ 7: 0];
         m_c2 <= mid_word[15: 8]; m_c1 <= mid_word[ 7: 0];
-        b_c2 <= bot_word_d[15:8]; b_c1 <= bot_word_d[7:0];
+        b_c2 <= bot_word[15: 8]; b_c1 <= bot_word[ 7: 0];
     end
 end
 
@@ -2207,8 +2176,8 @@ wire [7:0] m2 = mid_word[31:24], m3 = mid_word[23:16];
 wire [7:0] m4 = mid_word[15: 8], m5 = mid_word[ 7: 0];
 
 wire [7:0] b0 = b_c2, b1 = b_c1;
-wire [7:0] b2 = bot_word_d[31:24], b3 = bot_word_d[23:16];
-wire [7:0] b4 = bot_word_d[15: 8], b5 = bot_word_d[ 7: 0];
+wire [7:0] b2 = bot_word[31:24], b3 = bot_word[23:16];
+wire [7:0] b4 = bot_word[15: 8], b5 = bot_word[ 7: 0];
 
 // 纵向 1-2-1 加权和：V[j] = top[j] + 2*mid[j] + bot[j]
 // 4 个像素共用这 6 个 V，不用各算一遍。
@@ -2254,7 +2223,7 @@ wire [11:0] mag2 = {1'b0,ax2} + {1'b0,ay2};
 wire [11:0] mag3 = {1'b0,ax3} + {1'b0,ay3};
 
 // 前两行、每行第一组没有完整的左邻，直接置黑。
-wire        win_ok = (y_d >= 10'd2) && (x_d != 11'd0);
+wire        win_ok = (y_pos >= 10'd2) && (cur_addr != 11'd0);
 wire [11:0] th_ext = {1'b0, I_edge_th};
 
 wire e0 = win_ok && (mag0 >= th_ext);
@@ -2262,22 +2231,47 @@ wire e1 = win_ok && (mag1 >= th_ext);
 wire e2 = win_ok && (mag2 >= th_ext);
 wire e3 = win_ok && (mag3 >= th_ext);
 
-wire [23:0] o0 = e0 ? 24'hffffff : 24'h000000;
-wire [23:0] o1 = e1 ? 24'hffffff : 24'h000000;
-wire [23:0] o2 = e2 ? 24'hffffff : 24'h000000;
-wire [23:0] o3 = e3 ? 24'hffffff : 24'h000000;
+// ---------------------------------------------------------------- 显示输出
+// 2026-11-12: 从"纯二值"改成"梯度灰度"。
+// 二值化在门限处是个硬悬崖：梯度略小于门限的轮廓**直接变黑**，画面里只剩零星
+// 强点，线条自然断成一段一段，低对比度区域整片没有边 —— 这就是上板反馈的
+// "太淡 / 太少 / 断断续续"。
+// 改成把梯度幅值本身当亮度（钳到 255）：弱边以暗灰出现、强边接近纯白，不再有
+// 门限悬崖，连续性由梯度本身的连续性保证。低于 EDGE_GATE 的当噪声丢掉。
+// 强边另走 O_strong 给卡通描边用，卡通不再依赖 O_tdata 的 ==0xffffff 判据。
+localparam [11:0] EDGE_GATE = 12'd24;
+
+wire [7:0] lv0 = (!win_ok)             ? 8'd0 :
+                 (mag0 < EDGE_GATE)    ? 8'd0 :
+                 (mag0[11:8] != 4'd0)  ? 8'hFF : mag0[7:0];
+wire [7:0] lv1 = (!win_ok)             ? 8'd0 :
+                 (mag1 < EDGE_GATE)    ? 8'd0 :
+                 (mag1[11:8] != 4'd0)  ? 8'hFF : mag1[7:0];
+wire [7:0] lv2 = (!win_ok)             ? 8'd0 :
+                 (mag2 < EDGE_GATE)    ? 8'd0 :
+                 (mag2[11:8] != 4'd0)  ? 8'hFF : mag2[7:0];
+wire [7:0] lv3 = (!win_ok)             ? 8'd0 :
+                 (mag3 < EDGE_GATE)    ? 8'd0 :
+                 (mag3[11:8] != 4'd0)  ? 8'hFF : mag3[7:0];
+
+wire [23:0] o0 = {lv0,lv0,lv0};
+wire [23:0] o1 = {lv1,lv1,lv1};
+wire [23:0] o2 = {lv2,lv2,lv2};
+wire [23:0] o3 = {lv3,lv3,lv3};
 
 always @(posedge I_clk or negedge I_rst_n) begin
     if (!I_rst_n) begin
         O_tdata  <= 96'd0;
+        O_strong <= 4'd0;
         O_tvalid <= 1'b0;
         O_tuser  <= 1'b0;
         O_tlast  <= 1'b0;
     end else begin
-        O_tdata  <= v_d ? {o0,o1,o2,o3} : 96'd0;
-        O_tvalid <= v_d;
-        O_tuser  <= u_d;
-        O_tlast  <= l_d;
+        O_tdata  <= I_tvalid ? {o0,o1,o2,o3} : 96'd0;
+        O_strong <= I_tvalid ? {e0,e1,e2,e3} : 4'd0;
+        O_tvalid <= I_tvalid;
+        O_tuser  <= I_tuser;
+        O_tlast  <= I_tlast;
     end
 end
 
@@ -2306,7 +2300,7 @@ module cartoon_effect_96 #(
     parameter QUANT_BITS = 2    // 2 => 64 色（明显卡通）；4 => 4096 色（较柔和）
 )(
     input      [95:0] I_color,   // 4 x RGB888 原图
-    input      [95:0] I_edge,    // 4 x RGB888 边缘图，0xffffff = 边缘
+    input      [3:0]  I_strong,  // 每像素 1 位强边标志，bit3 = 最左像素
     output reg [95:0] O_cartoon,
     input             I_clk,
     input             I_rst_n
@@ -2320,14 +2314,15 @@ module cartoon_effect_96 #(
     // col_d/edg_d delay one 4-pixel group so a left neighbour exists; the last
     // pixel of a group uses this group's first pixel as its right neighbour
     // (a 4-pixel error, invisible).
-    reg  [95:0] col_d, edg_d;
+    reg  [95:0] col_d;
+    reg  [3:0]  strong_d;
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
-            col_d <= 96'd0;
-            edg_d <= 96'd0;
+            col_d    <= 96'd0;
+            strong_d <= 4'd0;
         end else begin
-            col_d <= I_color;
-            edg_d <= I_edge;
+            col_d    <= I_color;
+            strong_d <= I_strong;
         end
     end
 
@@ -2360,10 +2355,10 @@ module cartoon_effect_96 #(
                        f_sm(n3l[15: 8], d3[15: 8], n3r[15: 8]),
                        f_sm(n3l[ 7: 0], d3[ 7: 0], n3r[ 7: 0]) };
 
-    wire [23:0] e0 = edg_d[95:72];
-    wire [23:0] e1 = edg_d[71:48];
-    wire [23:0] e2 = edg_d[47:24];
-    wire [23:0] e3 = edg_d[23: 0];
+    wire s0 = strong_d[3];
+    wire s1 = strong_d[2];
+    wire s2 = strong_d[1];
+    wire s3 = strong_d[0];
 
     // 单通道量化：保留高 QUANT_BITS 位并复制填充到 8 位，保持满量程。
     // ★ 2026-10-11: 必须为**每一档**都写一条 case。原来只写了 2 和 4，
@@ -2385,10 +2380,10 @@ module cartoon_effect_96 #(
 
     function [23:0] f_pix;
         input [23:0] col;
-        input [23:0] edg;
+        input        strong;
         begin
-            if (edg == 24'hffffff)
-                f_pix = 24'h000000;                                  // 边缘 -> 黑色描边
+            if (strong)
+                f_pix = 24'h000000;                                  // 强边 -> 黑色描边
             else
                 f_pix = {f_quant(col[23:16]),
                          f_quant(col[15: 8]),
@@ -2397,7 +2392,7 @@ module cartoon_effect_96 #(
     endfunction
 
     always @(*) begin
-        O_cartoon = {f_pix(b0,e0), f_pix(b1,e1), f_pix(b2,e2), f_pix(b3,e3)};
+        O_cartoon = {f_pix(b0,s0), f_pix(b1,s1), f_pix(b2,s2), f_pix(b3,s3)};
     end
 
 endmodule
