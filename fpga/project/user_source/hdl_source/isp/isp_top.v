@@ -208,6 +208,7 @@ gamma_96 #(
 //   det_boxes2/3/4  = 每色的 rank2~4 —— 只给 ISP 域的 box_overlay_96 画框
 // 拆成 4 根 192 位总线而不是一根 768 位: rank1 那根正好就是原来那根总线,
 // 所以送 HDMI 的跨时钟域部分**一行都不用改** (标签只贴最大的框)。
+wire [191:0] det_boxes_raw;
 wire [191:0] det_boxes, det_boxes2, det_boxes3, det_boxes4;
 wire         box_tuser, box_tvalid;
 wire [ 95:0] box_tdata;
@@ -254,10 +255,23 @@ color_detect_96 #(
     .I_tuser     (gam_tuser),
     .I_tvalid    (gam_tvalid),
     .I_tdata     (gam_tdata),
-    .O_det_boxes (det_boxes ),
+    .O_det_boxes (det_boxes_raw ),
     .O_det_boxes2(det_boxes2),
     .O_det_boxes3(det_boxes3),
     .O_det_boxes4(det_boxes4)
+);
+
+// 帧间滞回：只作用于送显示/送下位的 rank1，不动检测内核。
+// 连续 2 帧命中才点亮；丢失后保持 8 帧（约 133 ms），期间框冻结在最后位置。
+color_box_hold_96 #(
+    .ON_N  (2'd2),
+    .HOLD_N(4'd8)
+) u_boxhold (
+    .I_clk  (axi4s_video_aclk),
+    .I_rst_n(I_rst_n),
+    .I_tuser(gam_tuser),
+    .I_boxes(det_boxes_raw),
+    .O_boxes(det_boxes    )
 );
 
 // ---- 显示模式 (2026-10-10) -------------------------------------------------
@@ -2009,6 +2023,78 @@ module color_box_ccl_96 #(
             end
         end
     end
+
+endmodule
+
+// ============================================================================
+// color_box_hold_96 —— 色块结果的帧间滞回（2026-11-12）
+//
+// 为什么需要它
+// ------------
+// color_box_ccl_96 每帧独立判定 valid = on && (cnt >= AREA_TH)。面积在门限
+// 附近抖动时，框会逐帧闪烁；某帧偶尔丢检时，框直接消失。上板表现就是
+// "特别不稳定"。
+//
+// 参考同器件的公开实现，结果通路普遍带三样东西：
+//   - 新鲜度 result_fresh / ready（结果是否可信、多久以前的）
+//   - dwell（连续停留若干帧才确认）
+//   - gain_change（增益变化直接作废）
+// 这里取其前两条，做一级**帧间滞回 + 保持**：
+//   · 连续 ON_N 帧检测到才点亮（滤掉单帧噪点）
+//   · 丢失后保持 HOLD_N 帧，期间输出**最后一次的好框**（框冻结而不是消失）
+// 只作用于送显示的那一路 rank1，不动跟踪内核，所以最坏情况是"框多停一会"。
+//
+// 64 位框布局与 color_box_ccl_96 一致：
+//   {cy[9:0], cx[10:0], valid, left[10:0], right[10:0], top[9:0], bottom[9:0]}
+//   bit42 = valid
+// ============================================================================
+module color_box_hold_96 #(
+    parameter [1:0] ON_N   = 2'd2,   // 连续多少帧才点亮
+    parameter [3:0] HOLD_N = 4'd8    // 丢失后保持多少帧
+)(
+    input              I_clk,
+    input              I_rst_n,
+    input              I_tuser,       // 帧边界（gam_tuser）
+    input      [191:0] I_boxes,       // 3 色 x 64bit rank1
+    output reg [191:0] O_boxes
+);
+
+    genvar gi;
+    generate for (gi = 0; gi < 3; gi = gi + 1) begin : g_hold
+        wire [63:0] bin = I_boxes[gi*64 +: 64];
+        wire        inv = bin[42];
+
+        reg [63:0] keep;     // 最后一次检测到的好框
+        reg [1:0]  onc;      // 连续有效帧数（饱和 ON_N）
+        reg [3:0]  msc;      // 连续丢失帧数（饱和 HOLD_N）
+        reg        ok;       // 当前是否对外有效
+
+        always @(posedge I_clk or negedge I_rst_n) begin
+            if (!I_rst_n) begin
+                keep <= 64'd0;
+                onc  <= 2'd0;
+                msc  <= HOLD_N;
+                ok   <= 1'b0;
+            end else if (I_tuser) begin
+                if (inv) begin
+                    keep <= bin;
+                    if (onc != ON_N) onc <= onc + 2'd1;
+                    msc  <= 4'd0;
+                    ok   <= (onc >= (ON_N - 2'd1)) ? 1'b1 : ok;
+                end else begin
+                    onc <= 2'd0;
+                    if (msc != HOLD_N) msc <= msc + 4'd1;
+                    ok  <= (msc >= (HOLD_N - 4'd1)) ? 1'b0 : ok;
+                end
+            end
+        end
+
+        // 坐标保持 keep，只有 valid 位跟着滞回状态走
+        always @(posedge I_clk or negedge I_rst_n) begin
+            if (!I_rst_n) O_boxes[gi*64 +: 64] <= 64'd0;
+            else          O_boxes[gi*64 +: 64] <= {keep[63:43], ok, keep[41:0]};
+        end
+    end endgenerate
 
 endmodule
 
