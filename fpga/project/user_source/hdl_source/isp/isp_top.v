@@ -1875,21 +1875,31 @@ module color_box_ccl_96 #(
     // the connected-component box edges still wobble a few pixels per frame.
     // Ignore changes of <= 4 px on rank1 (the only rank that is drawn); real
     // motion is larger and updates immediately.
-    localparam [4:0] DB_PX = 5'd4;
-    reg [10:0] D_x0, D_x1, D_cx;
-    reg [ 9:0] D_y0, D_y1, D_cy;
-    wire [10:0] dd_x0 = (W1_x0 > D_x0) ? (W1_x0 - D_x0) : (D_x0 - W1_x0);
-    wire [10:0] dd_x1 = (W1_x1 > D_x1) ? (W1_x1 - D_x1) : (D_x1 - W1_x1);
-    wire [ 9:0] dd_y0 = (W1_y0 > D_y0) ? (W1_y0 - D_y0) : (D_y0 - W1_y0);
-    wire [ 9:0] dd_y1 = (W1_y1 > D_y1) ? (W1_y1 - D_y1) : (D_y1 - W1_y1);
-    wire [10:0] dd_cx = (S_cx  > D_cx) ? (S_cx  - D_cx) : (D_cx - S_cx );
-    wire [ 9:0] dd_cy = (S_cy  > D_cy) ? (S_cy  - D_cy) : (D_cy - S_cy );
-    wire [10:0] O_bx0 = (dd_x0 > {6'd0, DB_PX}) ? W1_x0 : D_x0;
-    wire [10:0] O_bx1 = (dd_x1 > {6'd0, DB_PX}) ? W1_x1 : D_x1;
-    wire [ 9:0] O_by0 = (dd_y0 > DB_PX[3:0]   ) ? W1_y0 : D_y0;
-    wire [ 9:0] O_by1 = (dd_y1 > DB_PX[3:0]   ) ? W1_y1 : D_y1;
-    wire [10:0] O_bcx = (dd_cx > {6'd0, DB_PX}) ? S_cx  : D_cx;
-    wire [ 9:0] O_bcy = (dd_cy > DB_PX[3:0]   ) ? S_cy  : D_cy;
+    // ---- 2026-11-12: 从"死区"改成"限速跟随" ------------------------------
+    // 原来的做法是：变化 <= 4px 就保持旧值，**超过 4px 就直接跳到新值** ——
+    // 背景像素一进一出把 bbox 撑开 20 像素时，框会立刻跳过去，上板表现就是
+    // "框抖得厉害"。死区只压得住小幅抖动，压不住单帧异常跳变。
+    //
+    // 改成每帧最多移动 SLEW 像素：
+    //   · 目标没动 → 框不动（等价死区）
+    //   · 有微小抖动 → 每帧挪 8px 就收敛回来，不会来回跳
+    //   · 真实运动 → 平滑跟随，最快 8px/帧 ≈ 480px/s
+    localparam [10:0] SLEW   = 11'd8;
+    localparam [ 9:0] SLEW_Y = 10'd8;
+    reg [10:0] D_x0, D_x1;
+    reg [ 9:0] D_y0, D_y1;
+
+    wire [10:0] O_bx0 = (W1_x0 > (D_x0 + SLEW  )) ? (D_x0 + SLEW  ) :
+                        (W1_x0 + SLEW   < D_x0  ) ? (D_x0 - SLEW  ) : W1_x0;
+    wire [10:0] O_bx1 = (W1_x1 > (D_x1 + SLEW  )) ? (D_x1 + SLEW  ) :
+                        (W1_x1 + SLEW   < D_x1  ) ? (D_x1 - SLEW  ) : W1_x1;
+    wire [ 9:0] O_by0 = (W1_y0 > (D_y0 + SLEW_Y)) ? (D_y0 + SLEW_Y) :
+                        (W1_y0 + SLEW_Y < D_y0  ) ? (D_y0 - SLEW_Y) : W1_y0;
+    wire [ 9:0] O_by1 = (W1_y1 > (D_y1 + SLEW_Y)) ? (D_y1 + SLEW_Y) :
+                        (W1_y1 + SLEW_Y < D_y1  ) ? (D_y1 - SLEW_Y) : W1_y1;
+    // 质心直接用平滑后的框中心，和 rank2~4 的口径一致
+    wire [10:0] O_bcx = (O_bx0 + O_bx1) >> 1;
+    wire [ 9:0] O_bcy = (O_by0 + O_by1) >> 1;
 
     // 拼一个 64 位的 rank 记录, 格式与 color_box_96 完全一致
     function [63:0] mkbox;
@@ -1957,7 +1967,6 @@ module color_box_ccl_96 #(
             S_div_i <= 6'd0; S_div_2nd <= 1'b0; S_div_pend <= 1'b0;
             S_cx <= 11'd0; S_cy <= 10'd0;
             D_x0 <= 11'd0; D_x1 <= 11'd0; D_y0 <= 10'd0; D_y1 <= 10'd0;
-            D_cx <= 11'd0; D_cy <= 10'd0;
         end else begin
             // ---- 帧开始: 输出上一帧排好的 4 个 rank + 锁存本帧 -----------------
             if (I_tuser) begin
@@ -1977,7 +1986,6 @@ module color_box_ccl_96 #(
                 W1_on  <= SRT1[4];  W1_cnt <= SRT1[22:5];
                 if (W1_on && (W1_cnt >= AREA_TH)) begin
                     D_x0 <= O_bx0; D_x1 <= O_bx1; D_y0 <= O_by0; D_y1 <= O_by1;
-                    D_cx <= O_bcx; D_cy <= O_bcy;
                 end
                 W1_x0  <= T_x0[SRT1[3:0]];  W1_x1 <= T_x1[SRT1[3:0]];
                 W1_y0  <= T_y0[SRT1[3:0]];  W1_y1 <= T_y1[SRT1[3:0]];
