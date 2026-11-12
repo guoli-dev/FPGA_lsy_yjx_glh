@@ -666,6 +666,7 @@ module color_detect_96 #(
     parameter GREEN_MIN_RUN = 2,
     parameter MIN_BRIGHT    = 80,   // 亮度下限, 滤除暗噪声
     parameter AREA_TH       = 300,  // **单个连通域**面积(像素数)小于该值不报
+    parameter AREA_MAX      = 80000,// **单个连通域**面积(像素数)大于该值也不报（见 CCL 里的说明）
     parameter MIN_RUN       = 2,    // 每个 4 像素组内至少这么多像素命中才算"活跃"
     // ---- 边缘屏蔽 ----------------------------------------------------------
     // 四角有镜头色阴影(偏红), 会触发红色误检。真正的修法是 LSC(分区增益),
@@ -831,7 +832,7 @@ module color_detect_96 #(
 
     color_box_ccl_96 #(
         .IMG_WIDTH (IMG_WIDTH ), .IMG_HEIGHT(IMG_HEIGHT),
-        .AREA_TH   (AREA_TH   ), .MIN_RUN   (MIN_RUN   ),
+        .AREA_TH   (AREA_TH   ), .AREA_MAX(AREA_MAX), .MIN_RUN   (MIN_RUN   ),
         .EDGE_MASK_X(EDGE_MASK_X), .EDGE_MASK_Y(EDGE_MASK_Y),
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_r (
@@ -841,7 +842,7 @@ module color_detect_96 #(
 
     color_box_ccl_96 #(
         .IMG_WIDTH (IMG_WIDTH ), .IMG_HEIGHT(IMG_HEIGHT),
-        .AREA_TH   (AREA_TH   ), .MIN_RUN   (GREEN_MIN_RUN),
+        .AREA_TH   (AREA_TH   ), .AREA_MAX(AREA_MAX), .MIN_RUN   (GREEN_MIN_RUN),
         .EDGE_MASK_X(EDGE_MASK_X), .EDGE_MASK_Y(EDGE_MASK_Y),
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_g (
@@ -851,7 +852,7 @@ module color_detect_96 #(
 
     color_box_ccl_96 #(
         .IMG_WIDTH (IMG_WIDTH ), .IMG_HEIGHT(IMG_HEIGHT),
-        .AREA_TH   (AREA_TH   ), .MIN_RUN   (2       ),
+        .AREA_TH   (AREA_TH   ), .AREA_MAX(AREA_MAX), .MIN_RUN   (2       ),
         .EDGE_MASK_X(EDGE_MASK_X), .EDGE_MASK_Y(EDGE_MASK_Y),
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_b (
@@ -1655,6 +1656,11 @@ module color_box_ccl_96 #(
     parameter IMG_WIDTH  = 1280,
     parameter IMG_HEIGHT = 720,
     parameter AREA_TH    = 300,   // **单个连通域**小于这么多像素就不报
+    // 2026-11-12: 面积上限。上板照片里红框套在整扇棕色木门上 —— 那是十几万像素的
+    // 连通域，而真色块只在 1 万量级。这是**语义约束**（目标是"一个色块"，
+    // 不是"占满画面的区域"），比继续猜饱和度门限可靠得多。
+    // 单条比较器，约 15 LUT。全画面是 921600 像素，取值有很宽的余量。
+    parameter AREA_MAX   = 80000, // **单个连通域**大于这么多像素也不报
     parameter MIN_RUN    = 2,     // 每个 4 像素组至少这么多命中才算活跃
     parameter EDGE_MASK_X = 80,
     parameter EDGE_MASK_Y = 45,
@@ -1921,7 +1927,7 @@ module color_box_ccl_96 #(
             bw = {1'b0,x1} - {1'b0,x0} + 12'd1;
             bh = {2'b0,y1} - {2'b0,y0} + 12'd1;
             mkbox = { cy, cx,
-                      (on && (cnt >= AREA_TH)
+                      (on && (cnt >= AREA_TH) && (cnt <= AREA_MAX)
                           && (bw >= 12'd8) && (bh >= 12'd8)
                           && (bw <= (bh << 2)) && (bh <= (bw << 2))),
                       x0, x1, y0, y1 };
