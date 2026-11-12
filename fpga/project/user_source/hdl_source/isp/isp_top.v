@@ -2188,15 +2188,21 @@ wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 //   对策：把声明深度拉到 1024（实际只用 0..319）。1024x32 = 32768 bit，用分布式
 //   RAM 实现要 ~800 个 LUT，综合器只能走 ERAM；每块占 2 个 ERAM，两块共 4 块
 //   （当前 ERAM 80/108，放得下）。地址只用低 9 位，高 2 位恒 0。
-(* ram_style = "bram" *) reg [31:0] mem0 [0:1023];   // 第 y-1 行，只用 0..319
-(* ram_style = "bram" *) reg [31:0] mem1 [0:1023];   // 第 y-2 行，只用 0..319
+//
+// ★ 2026-11-12 起字宽 32 -> 36：多存 4 个"强边位"（每像素 1 bit），
+//   供双门限滞回判断上一行的邻域支撑。1024x36 仍然只占 2 个 ERAM 块。
+(* ram_style = "bram" *) reg [35:0] mem0 [0:1023];   // {强边位[3:0], 第 y-1 行灰度}
+(* ram_style = "bram" *) reg [35:0] mem1 [0:1023];   // {强边位[3:0], 第 y-2 行灰度}
 
 reg [10:0] x_grp;        // 组号 0..319
 reg [9:0]  y_pos;        // 行号 0..719
 
-reg [31:0] r0, r1;       // 同步读输出
-reg [31:0] fwd0, fwd1;   // 写转发值
+reg [35:0] r0, r1;       // 同步读输出
+reg [35:0] fwd0, fwd1;   // 写转发值
 reg        col_l;        // 上一拍是否发生预取/写地址冲突
+
+// 强边位（本组的 4 个像素），后面才赋值，这里先声明给写端口用
+wire e0, e1, e2, e3;
 
 wire        de       = I_tvalid;
 wire        tuser_v  = I_tuser && I_tvalid;
@@ -2204,17 +2210,20 @@ wire [10:0] cur_addr = tuser_v ? 11'd0 : x_grp;
 // 预取：这一拍给出「下一拍才会用到」的组号
 wire [10:0] pf_addr  = (!de || cur_addr == LAST) ? 11'd0 : (cur_addr + 11'd1);
 wire        col_hit  = de && (pf_addr == cur_addr);
-wire [31:0] mid_word = col_l ? fwd0 : r0;   // 第 y-1 行（本组）
-wire [31:0] top_word = col_l ? fwd1 : r1;   // 第 y-2 行（本组）
+wire [35:0] mid_word = col_l ? fwd0 : r0;   // 第 y-1 行（本组）
+wire [35:0] top_word = col_l ? fwd1 : r1;   // 第 y-2 行（本组）
+wire [31:0] mid_gray = mid_word[31:0];      // 第 y-1 行灰度
+wire [31:0] top_gray = top_word[31:0];      // 第 y-2 行灰度
+wire [3:0]  mid_sb   = mid_word[35:32];     // 第 y-1 行强边位，bit3 = 最左像素
 
 always @(posedge I_clk or negedge I_rst_n) begin
     if (!I_rst_n) begin
         x_grp <= 11'd0;
         y_pos <= 10'd0;
-        r0    <= 32'd0;
-        r1    <= 32'd0;
-        fwd0  <= 32'd0;
-        fwd1  <= 32'd0;
+        r0    <= 36'd0;
+        r1    <= 36'd0;
+        fwd0  <= 36'd0;
+        fwd1  <= 36'd0;
         col_l <= 1'b0;
     end else begin
         // ---- 预取读：地址是下一拍要用的组号 ----
@@ -2223,12 +2232,12 @@ always @(posedge I_clk or negedge I_rst_n) begin
 
         // ---- 写转发：万一回绕撞地址，用写数据旁路 ----
         col_l <= col_hit;
-        fwd0  <= bot_word;
+        fwd0  <= {e0,e1,e2,e3, bot_word};
         fwd1  <= mid_word;
 
-        // ---- 写：本行进 mem0，第 y-1 行滚动进 mem1 ----
+        // ---- 写：本行（灰度 + 强边位）进 mem0，第 y-1 行滚动进 mem1 ----
         if (de) begin
-            mem0[cur_addr] <= bot_word;
+            mem0[cur_addr] <= {e0,e1,e2,e3, bot_word};
             mem1[cur_addr] <= mid_word;
         end
 
@@ -2256,20 +2265,20 @@ always @(posedge I_clk or negedge I_rst_n) begin
         m_c2 <= 8'd0; m_c1 <= 8'd0;
         b_c2 <= 8'd0; b_c1 <= 8'd0;
     end else if (I_tvalid) begin
-        t_c2 <= top_word[15: 8]; t_c1 <= top_word[ 7: 0];
-        m_c2 <= mid_word[15: 8]; m_c1 <= mid_word[ 7: 0];
+        t_c2 <= top_gray[15: 8]; t_c1 <= top_gray[ 7: 0];
+        m_c2 <= mid_gray[15: 8]; m_c1 <= mid_gray[ 7: 0];
         b_c2 <= bot_word[15: 8]; b_c1 <= bot_word[ 7: 0];
     end
 end
 
 // ------------------------------------------------- 6 列 x 3 行窗口
 wire [7:0] t0 = t_c2, t1 = t_c1;
-wire [7:0] t2 = top_word[31:24], t3 = top_word[23:16];
-wire [7:0] t4 = top_word[15: 8], t5 = top_word[ 7: 0];
+wire [7:0] t2 = top_gray[31:24], t3 = top_gray[23:16];
+wire [7:0] t4 = top_gray[15: 8], t5 = top_gray[ 7: 0];
 
 wire [7:0] m0 = m_c2, m1 = m_c1;
-wire [7:0] m2 = mid_word[31:24], m3 = mid_word[23:16];
-wire [7:0] m4 = mid_word[15: 8], m5 = mid_word[ 7: 0];
+wire [7:0] m2 = mid_gray[31:24], m3 = mid_gray[23:16];
+wire [7:0] m4 = mid_gray[15: 8], m5 = mid_gray[ 7: 0];
 
 wire [7:0] b0 = b_c2, b1 = b_c1;
 wire [7:0] b2 = bot_word[31:24], b3 = bot_word[23:16];
@@ -2320,29 +2329,61 @@ wire [11:0] mag3 = {1'b0,ax3} + {1'b0,ay3};
 
 // 前两行、每行第一组没有完整的左邻，直接置黑。
 wire        win_ok = (y_pos >= 10'd2) && (cur_addr != 11'd0);
-wire [11:0] th_ext = {1'b0, I_edge_th};
 
-wire e0 = win_ok && (mag0 >= th_ext);
-wire e1 = win_ok && (mag1 >= th_ext);
-wire e2 = win_ok && (mag2 >= th_ext);
-wire e3 = win_ok && (mag3 >= th_ext);
+// ---------------------------------------------------------------- 双门限滞回
+// 2026-11-12 上板照片确认：单一门限分不开"家具轮廓"和"墙面/木纹纹理"，
+// 两者的梯度幅值区间是重叠的，调高就丢轮廓、调低就满屏噪点。
+//
+// 改成 Canny 的双门限滞回（不做 NMS）：
+//   · 强边（mag >= HI，即 I_edge_th）→ 一定要
+//   · 弱边（mag >= HI/2）→ 只有 3x3 邻域里连到强边时才保留
+// 真轮廓的旁边总有强边，所以连通性保住；孤立纹理斑点周围没有强边，被剔掉。
+//
+// 邻域只用**已经看到过的**像素（因果）：
+//   上一行（mem0 里存的 mid 强边位）：pixel i-1 / i / i+1
+//   本行：左邻 pixel i-1
+wire [11:0] th_ext = {1'b0, I_edge_th};
+wire [11:0] lo_ext = {2'b0, I_edge_th[10:1]};   // 强门限的一半
+
+assign e0 = win_ok && (mag0 >= th_ext);
+assign e1 = win_ok && (mag1 >= th_ext);
+assign e2 = win_ok && (mag2 >= th_ext);
+assign e3 = win_ok && (mag3 >= th_ext);
+
+wire w0 = win_ok && (mag0 >= lo_ext);
+wire w1 = win_ok && (mag1 >= lo_ext);
+wire w2 = win_ok && (mag2 >= lo_ext);
+wire w3 = win_ok && (mag3 >= lo_ext);
+
+// 上一组的边缘强边位（本行 pixel3 / 上一行 pixel3）
+reg sb_p, msb_p;
+always @(posedge I_clk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
+        sb_p  <= 1'b0;
+        msb_p <= 1'b0;
+    end else if (I_tvalid) begin
+        sb_p  <= e3;
+        msb_p <= mid_sb[0];
+    end
+end
+
+// 邻域支撑：本行左邻 + 上一行 3 个（pixel i-1 / i / i+1）
+wire sup0 = sb_p || msb_p   || mid_sb[3] || mid_sb[2];
+wire sup1 = e0   || mid_sb[3] || mid_sb[2] || mid_sb[1];
+wire sup2 = e1   || mid_sb[2] || mid_sb[1] || mid_sb[0];
+wire sup3 = e2   || mid_sb[1] || mid_sb[0];
+
+wire k0 = e0 || (w0 && sup0);
+wire k1 = e1 || (w1 && sup1);
+wire k2 = e2 || (w2 && sup2);
+wire k3 = e3 || (w3 && sup3);
 
 // ---------------------------------------------------------------- 显示输出
-// 2026-11-12 第三次调整：回到二值。
-//
-// 过程记录（避免以后再绕一圈）：
-//   1) 初版二值 + 门限 80 → 上板反馈"太淡/太少/断断续续"。因为门限在梯度分布
-//      的高端，门限以下的真实轮廓全被丢掉。
-//   2) 改成梯度灰度（幅值直接当亮度）→ 反馈"像原图，没有边缘检测的感觉"。
-//      原因：普通纹理和明暗过渡的幅值本来就在 10~100，全都显示成灰，整幅画
-//      就成了一张暗淡的原图副本。
-//   3) 现在：二值，但门限降到 45（isp_top 里改），多出一倍以上的边；同时保留
-//      O_strong 给卡通描边。既不像原图，也不至于只剩零星强点。
-// 门限仍由上层 I_edge_th 给，板上若还嫌少/多，只改 isp_top 那个常量即可。
-wire [23:0] o0 = e0 ? 24'hffffff : 24'h000000;
-wire [23:0] o1 = e1 ? 24'hffffff : 24'h000000;
-wire [23:0] o2 = e2 ? 24'hffffff : 24'h000000;
-wire [23:0] o3 = e3 ? 24'hffffff : 24'h000000;
+// 仍是二值（白边黑底）。门限由上层 I_edge_th 给，当前 60；弱门限自动取一半。
+wire [23:0] o0 = k0 ? 24'hffffff : 24'h000000;
+wire [23:0] o1 = k1 ? 24'hffffff : 24'h000000;
+wire [23:0] o2 = k2 ? 24'hffffff : 24'h000000;
+wire [23:0] o3 = k3 ? 24'hffffff : 24'h000000;
 
 always @(posedge I_clk or negedge I_rst_n) begin
     if (!I_rst_n) begin
