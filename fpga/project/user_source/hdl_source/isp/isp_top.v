@@ -1846,6 +1846,30 @@ module color_box_ccl_96 #(
     wire [10:0] W4_cx = (W4_x0 + W4_x1) >> 1;
     wire [ 9:0] W4_cy = (W4_y0 + W4_y1) >> 1;
 
+    // ---- 帧末轨迹合并（2026-11-12）----------------------------------------
+    // 高光带把物体上下撕开后，两半变成两条独立轨迹，各自面积减半；
+    // AREA_TH=300 一卡，两条都不报框 —— 表现就是"物体突然消失"。
+    // CCL 的匹配每拍只认一条轨迹（低索引优先），所以永不合并。
+    //
+    // 这里在**帧末**把 rank1 与 rank2 在「纵向靠近 + 横向重叠」时合并：
+    // 面积相加、bbox 取并集、valid 用合并后的面积去比 AREA_TH。
+    // 纯组合、只在 tuser 那一拍求值，完全不碰像素通路，也不加存储。
+    wire [10:0] w12_gap   = (W2_y0 > W1_y1) ? ({1'b0,W2_y0} - {1'b0,W1_y1}) :
+                            (W1_y0 > W2_y1) ? ({1'b0,W1_y0} - {1'b0,W2_y1}) : 11'd0;
+    wire        w12_ovl   = !(W1_x1 < W2_x0) && !(W2_x1 < W1_x0);
+    wire        w12_merge = W1_on && W2_on &&
+                            (W1_cnt >= 18'd32) && (W2_cnt >= 18'd32) &&
+                            w12_ovl && (w12_gap <= 11'd32);
+    wire [17:0] w12_cnt   = W1_cnt + W2_cnt;
+    wire [10:0] w12_x0    = (W1_x0 < W2_x0) ? W1_x0 : W2_x0;
+    wire [10:0] w12_x1    = (W1_x1 > W2_x1) ? W1_x1 : W2_x1;
+    wire [ 9:0] w12_y0    = (W1_y0 < W2_y0) ? W1_y0 : W2_y0;
+    wire [ 9:0] w12_y1    = (W1_y1 > W2_y1) ? W1_y1 : W2_y1;
+    wire [11:0] w12_cxs   = {1'b0,w12_x0} + {1'b0,w12_x1};
+    wire [10:0] w12_cx    = w12_cxs[11:1];
+    wire [10:0] w12_cys   = {1'b0,w12_y0} + {1'b0,w12_y1};
+    wire [ 9:0] w12_cy    = w12_cys[10:1];
+
     // ---- rank1 output deadband (2026-10-19) --------------------------------
     // Background pixels of a similar colour drift in and out of the blob, so
     // the connected-component box edges still wobble a few pixels per frame.
@@ -1939,10 +1963,15 @@ module color_box_ccl_96 #(
             if (I_tuser) begin
                 // (1) 输出 —— 用上一拍锁存的 W1..W4, 和上一帧算好的 rank1 真质心。
                 //     非阻塞赋值, 所以下面"锁存本帧"那一段不会影响这里读到的值。
-                O_boxes <= { mkbox(W4_on, W4_cnt, W4_x0, W4_x1, W4_cx, W4_y0, W4_y1, W4_cy),
-                             mkbox(W3_on, W3_cnt, W3_x0, W3_x1, W3_cx, W3_y0, W3_y1, W3_cy),
-                             mkbox(W2_on, W2_cnt, W2_x0, W2_x1, W2_cx, W2_y0, W2_y1, W2_cy),
-                             mkbox(W1_on, W1_cnt, O_bx0, O_bx1, O_bcx, O_by0, O_by1, O_bcy) };
+                // rank1/rank2 判定为同一物体时：rank1 输出合并框，rank2 置空，
+                // 这样不会出现"一个物体两个框"，也不会因为各自面积不足而一起消失。
+                O_boxes <= {
+                    mkbox(W4_on, W4_cnt, W4_x0, W4_x1, W4_cx, W4_y0, W4_y1, W4_cy),
+                    mkbox(W3_on, W3_cnt, W3_x0, W3_x1, W3_cx, W3_y0, W3_y1, W3_cy),
+                    w12_merge ? 64'd0
+                              : mkbox(W2_on, W2_cnt, W2_x0, W2_x1, W2_cx, W2_y0, W2_y1, W2_cy),
+                    w12_merge ? mkbox(1'b1, w12_cnt, w12_x0, w12_x1, w12_cx, w12_y0, w12_y1, w12_cy)
+                              : mkbox(W1_on, W1_cnt, O_bx0, O_bx1, O_bcx, O_by0, O_by1, O_bcy) };
 
                 // (2) 锁存本帧排好序的 4 个 rank —— 此刻轨迹表里还是刚跑完那一帧的结果
                 W1_on  <= SRT1[4];  W1_cnt <= SRT1[22:5];
