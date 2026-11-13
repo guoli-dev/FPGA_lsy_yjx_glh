@@ -886,9 +886,30 @@ module color_detect_96 #(
 
     // I_hit[3] = 组内第 0 个像素(最左), I_hit[0] = 第 3 个像素
     // 现在整组同判，4 位一起置位 —— CCL 的 MIN_RUN=3 因此等价于"组被判中"。
-    wire [3:0] hit_r = {4{hr}};
-    wire [3:0] hit_g = {4{hg}};
-    wire [3:0] hit_b = {4{hb}};
+    // 2026-11-13: 判色之后、进 CCL 之前加一级**水平 3 点中值滤波**。
+    // 完整 3x3 腐蚀/膨胀要 2 行延时 = 320 组 x 3 色 x 2 行 = 1920 寄存器，
+    // 当前 slice 94.2% 塞不下；水平 3 点只要 6 个寄存器，能去掉"孤立的单组
+    // 命中"，且不缩小目标（中值不改变长度 >= 2 的游程）。
+    reg hr1, hr2, hg1, hg2, hb1, hb2;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            hr1 <= 1'b0; hr2 <= 1'b0;
+            hg1 <= 1'b0; hg2 <= 1'b0;
+            hb1 <= 1'b0; hb2 <= 1'b0;
+        end else if (I_tvalid) begin
+            hr1 <= hr;  hr2 <= hr1;
+            hg1 <= hg;  hg2 <= hg1;
+            hb1 <= hb;  hb2 <= hb1;
+        end
+    end
+
+    // 3 点中值 = 三个里至少两个为真
+    wire hr_m = (hr & hr1) | (hr & hr2) | (hr1 & hr2);
+    wire hg_m = (hg & hg1) | (hg & hg2) | (hg1 & hg2);
+    wire hb_m = (hb & hb1) | (hb & hb2) | (hb1 & hb2);
+    wire [3:0] hit_r = {4{hr_m}};
+    wire [3:0] hit_g = {4{hg_m}};
+    wire [3:0] hit_b = {4{hb_m}};
 
     // ---- 判色 -> 跟踪 之间插一级流水 (2026-10-09) --------------------------
     // 原来判色函数 (is_red/is_green/is_blue, 每像素 5 个条件 x 4 像素 x 3 色) 和
