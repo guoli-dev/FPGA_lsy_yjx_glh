@@ -1449,33 +1449,68 @@ module hdmi_mixer #(
     //   位宽: y 最大 159, 159*160 = 25440 -> 15 位够 (ROM 地址就是 15 位)。
     //   C_logo_in 为假时地址会溢出回绕, 但那时 R1_logo_in=0 -> S_logo_on_r 必为 0。
     // ========================================================================
+    // ========================================================================
+    // Logo 通路 —— 2026-11-13 改成游程解码
+    //
+    // 原来：C_logo_addr = y*160 + x  ->  6387 条 case 的 ROM（1672 LUT）-> 寄存
+    // 现在：ROM 存 1024 段游程 {起始x, 长度, 颜色}，解码器跟着像素 x 逐段推进。
+    //
+    // ★ 地址：Logo 实际只占第 34~127 行、第 7~152 列（94 x 146）。
+    //   行内第 row 行的段起点 = row*18（每行补齐到 18 段，无数据的段 len=0）。
+    // ★ 时序：仍是两级 —— 第 1 级算出段地址并寄存，第 2 级读 ROM 出来比较，
+    //   和原来 "地址寄存 -> 组合 ROM -> 再寄存" 一样深，Logo 位置不会偏。
+    // ========================================================================
     wire        C_logo_in   = (S_x >= LOGO_X) && (S_x < (LOGO_X + LOGO_W)) &&
                               (S_y >= LOGO_Y) && (S_y < (LOGO_Y + LOGO_H));
-    wire [11:0] C_logo_x    = S_x - LOGO_X;
-    wire [11:0] C_logo_y    = S_y - LOGO_Y;
-    wire [14:0] C_logo_addr = (C_logo_y << 7) + (C_logo_y << 5) + C_logo_x;
+    wire [7:0]  C_lx        = S_x[7:0] - 8'd7;    // 相对 Logo 左边界
+    wire [7:0]  C_ly        = S_y[7:0] - 8'd34;   // 相对 Logo 上边界
+    wire [10:0] C_row_base  = C_ly * 11'd18;      // 每行 18 段
 
-    // ---- 第 1 级: 在不在 Logo 区内 + ROM 地址 ----
-    reg        R1_logo_in;
-    reg [14:0] R1_logo_addr;
+    reg         R1_logo_in;
+    reg  [7:0]  R1_lx;
+    reg  [7:0]  R1_ly;
+    reg  [4:0]  R1_seg;
+    reg  [10:0] R1_addr;
+    reg  [39:0] R1_seg_d;   // 上一拍的段数据（和 R1_lx 对齐）
+
+    wire [39:0] C_seg;
+    anlogic_logo_rle_rom u_anlogic_logo_rle_rom(
+        .I_clk ( I_clk  ),
+        .I_addr( R1_addr),
+        .O_seg ( C_seg  )
+    );
+
+    wire [7:0] C_seg_end = R1_seg_d[39:32] + R1_seg_d[31:24];
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
-            R1_logo_in   <= 1'b0;
-            R1_logo_addr <= 15'd0;
+            R1_logo_in <= 1'b0;
+            R1_lx      <= 8'd0;
+            R1_ly      <= 8'd0;
+            R1_seg     <= 5'd0;
+            R1_addr    <= 11'd0;
+            R1_seg_d   <= 40'd0;
         end else begin
-            // I_logo_en 也在这里并进去 —— 按键"一键清屏"要图标和文字一起消失
-            R1_logo_in   <= I_logo_en && C_logo_in;
-            R1_logo_addr <= C_logo_addr;
+            R1_logo_in <= I_logo_en && C_logo_in;
+            R1_lx      <= C_lx;
+            R1_ly      <= C_ly;
+            R1_seg_d   <= C_seg;
+            if (C_ly != R1_ly) begin
+                // 进入新的一行：从第 0 段开始
+                R1_seg  <= 5'd0;
+                R1_addr <= C_row_base;
+            end else if (R1_lx > C_seg_end) begin
+                // 本像素已越过当前段 -> 换下一段（数据下一拍到，正好赶上）
+                R1_seg  <= R1_seg + 5'd1;
+                R1_addr <= R1_addr + 11'd1;
+            end
         end
     end
 
-    // ---- 第 2 级: ROM 读出 ----
-    wire [24:0] C_logo_pixel;
-    anlogic_logo_rom u_anlogic_logo_rom(
-        .I_addr  ( R1_logo_addr  ),
-        .O_pixel ( C_logo_pixel  )
-    );
+    // 第 2 级：段内才显示
+    wire        C_logo_hit = (R1_lx >= R1_seg_d[39:32]) && (R1_lx <= C_seg_end);
+    wire [23:0] C_logo_col = R1_seg_d[23:0];
+
 
     reg        S_logo_on_r;      // 本像素要不要画 Logo
     reg [23:0] S_logo_col_r;     // Logo 像素颜色
@@ -1485,8 +1520,8 @@ module hdmi_mixer #(
             S_logo_on_r  <= 1'b0;
             S_logo_col_r <= 24'd0;
         end else begin
-            S_logo_on_r  <= R1_logo_in && C_logo_pixel[24];
-            S_logo_col_r <= C_logo_pixel[23:0];
+            S_logo_on_r  <= R1_logo_in && C_logo_hit;
+            S_logo_col_r <= C_logo_col;
         end
     end
 
