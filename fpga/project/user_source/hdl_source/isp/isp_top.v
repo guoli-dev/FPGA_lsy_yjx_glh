@@ -1989,6 +1989,8 @@ module color_box_ccl_96 #(
         reg [11:0] bw, bh;
         reg [10:0] px0, px1;
         reg [ 9:0] py0, py1;
+        reg [10:0] ccx;
+        reg [ 9:0] ccy;
         begin
             // 2026-11-12: 加 bbox 形状合理性判据。
             // 纯颜色判据之下，一条细长的高光带、一片纹理噪点都能积到 AREA_TH
@@ -2006,7 +2008,13 @@ module color_box_ccl_96 #(
             px1 = (x1 < (11'd1279 - BOX_PAD)) ? (x1 + BOX_PAD)           : 11'd1279;
             py0 = (y0 > BOX_PAD[9:0])         ? (y0 - BOX_PAD[9:0])       : 10'd0;
             py1 = (y1 < (10'd719 - BOX_PAD[9:0])) ? (y1 + BOX_PAD[9:0])   : 10'd719;
-            mkbox = { cy, cx,
+            // 2026-11-13: 把十字（cx/cy）夹进报出去的框里。
+            // 十字用的是限速跟随的位置（每帧最多 SLEW 像素），框用的是当帧真实
+            // bbox —— 目标快速移动或换目标时，十字会落后、掉到框外面。
+            // 这里统一夹一次，保证十字永远在框内。纯比较器，0 额外存储。
+            ccx = (cx < px0) ? px0 : ((cx > px1) ? px1 : cx);
+            ccy = (cy < py0) ? py0 : ((cy > py1) ? py1 : cy);
+            mkbox = { ccy, ccx,
                       (on && (cnt >= AREA_TH) && (cnt <= AREA_MAX)
                           && (bw >= 12'd8) && (bh >= 12'd8)
                           && (bw <= (bh << 2)) && (bh <= (bw << 2))),
