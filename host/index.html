@@ -255,6 +255,77 @@
         #0b0c10;
       color: #f5f5f7;
     }
+    /* ===== 2026-11-13 第二轮：按截图调整 ===== */
+
+    /* 1) 色块位置图：没数据时给个明确的占位提示，不要一片惨白 */
+    .plot-layer:empty::after {
+      content: "等待 FPGA 色块数据…";
+      position: absolute;
+      left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 13px;
+      color: var(--faint);
+      letter-spacing: 0.06em;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px dashed rgba(29, 29, 31, 0.14);
+    }
+    /* 图本身压缩一点，给下方的交互记录腾空间 */
+    .plot { height: 264px; }
+    .plot-layer { position: absolute; inset: 0; }
+
+    /* 2) 交互记录：字号提到 12.5px，行距拉开，答辩时读得清 */
+    .log { font-size: 12.5px; line-height: 1.75; }
+    .log .row, .log div { letter-spacing: 0.01em; }
+
+    /* 3) 识别结果：三行拉高一点，色标加大，别挤在一起 */
+    .block-row { padding: 9px 2px; align-items: center; }
+    .block-row .sw {
+      width: 10px; height: 10px;
+      box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.045);
+    }
+    .block-row .nm { font-weight: 600; letter-spacing: 0.02em; }
+    .block-row .val { color: var(--faint); font-size: 12.5px; }
+
+    /* 4) 左右两列底部对齐：用 flex 让内容自然铺满，不再一边长一边短 */
+    .content { align-items: stretch; }
+    .content .col {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-height: 100%;
+    }
+    .content .col > .card:last-child { flex: 1 1 auto; }
+
+    /* 5) 顶部导航：做成低调的胶囊，看得出可点 */
+    .topnav a, .topnav .nav-item {
+      padding: 4px 10px;
+      border-radius: 999px;
+      transition: background .15s ease, color .15s ease;
+    }
+    .topnav a:hover, .topnav .nav-item:hover {
+      background: rgba(0, 102, 204, 0.10);
+      color: var(--accent);
+    }
+
+    /* 6) 侧栏模式按钮：选中态加左侧蓝色粗边，当前模式一眼认出 */
+    .mode-btn { position: relative; transition: background .15s ease, transform .12s ease; }
+    .mode-btn:hover { background: rgba(0, 102, 204, 0.07); }
+    .mode-btn.active::before, .mode-btn[aria-pressed="true"]::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 18%; bottom: 18%;
+      width: 3px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+
+    /* 7) 顶部连接状态：等待时橙、连上后绿，加强存在感 */
+    #headerDot, .status .dot { transition: background .25s ease; }
+
+    /* 8) 细处：数字右对齐更整齐 */
+    .kv .val, .block-row .val { font-variant-numeric: tabular-nums; }
 </style>
 
 <div class="stage" aria-hidden="true">
