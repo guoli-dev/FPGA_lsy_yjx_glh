@@ -1730,6 +1730,8 @@ module color_box_ccl_96 #(
     // 不是"占满画面的区域"），比继续猜饱和度门限可靠得多。
     // 单条比较器，约 15 LUT。全画面是 921600 像素，取值有很宽的余量。
     parameter AREA_MAX   = 250000, // 2026-11-13: 80000 -> 250000（理由见 color_detect_96 那边）
+    // 报出去的框向外扩几像素，补偿判据偏高导致框只套住目标核心的问题
+    parameter BOX_PAD    = 6,
     parameter MIN_RUN    = 2,     // 每个 4 像素组至少这么多命中才算活跃
     parameter EDGE_MASK_X = 80,
     parameter EDGE_MASK_Y = 45,
@@ -1985,6 +1987,8 @@ module color_box_ccl_96 #(
         input [10:0] x0, x1, cx;
         input [ 9:0] y0, y1, cy;
         reg [11:0] bw, bh;
+        reg [10:0] px0, px1;
+        reg [ 9:0] py0, py1;
         begin
             // 2026-11-12: 加 bbox 形状合理性判据。
             // 纯颜色判据之下，一条细长的高光带、一片纹理噪点都能积到 AREA_TH
@@ -1995,11 +1999,18 @@ module color_box_ccl_96 #(
             // 注意这只收紧"报不报框"，不影响 CCL 的轨迹跟踪。
             bw = {1'b0,x1} - {1'b0,x0} + 12'd1;
             bh = {2'b0,y1} - {2'b0,y0} + 12'd1;
+            // 2026-11-13: 框向外扩 BOX_PAD 像素。门限偏高时只有目标最饱和的核心
+            // 能过，边缘像素被背景稀释后过不了，框就比物体小一圈。这里不改判据
+            // （改大了木门会回来），只把报出去的框向外补偿，超边界自动夹住。
+            px0 = (x0 > BOX_PAD)              ? (x0 - BOX_PAD)           : 11'd0;
+            px1 = (x1 < (11'd1279 - BOX_PAD)) ? (x1 + BOX_PAD)           : 11'd1279;
+            py0 = (y0 > BOX_PAD[9:0])         ? (y0 - BOX_PAD[9:0])       : 10'd0;
+            py1 = (y1 < (10'd719 - BOX_PAD[9:0])) ? (y1 + BOX_PAD[9:0])   : 10'd719;
             mkbox = { cy, cx,
                       (on && (cnt >= AREA_TH) && (cnt <= AREA_MAX)
                           && (bw >= 12'd8) && (bh >= 12'd8)
                           && (bw <= (bh << 2)) && (bh <= (bw << 2))),
-                      x0, x1, y0, y1 };
+                      px0, px1, py0, py1 };
         end
     endfunction
 
