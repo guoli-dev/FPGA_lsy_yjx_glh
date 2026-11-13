@@ -271,7 +271,7 @@ color_detect_96 #(
 // 连续 2 帧命中才点亮；丢失后保持 8 帧（约 133 ms），期间框冻结在最后位置。
 color_box_hold_96 #(
     .ON_N  (2'd2),
-    .HOLD_N(4'd8)
+    .HOLD_N(4'd12)   // 2026-11-13: 8 -> 12。红皮书处在 43.75% 门限临界，检测会一两帧掉，加长保持让框不跟着灭
 ) u_boxhold (
     .I_clk  (axi4s_video_aclk),
     .I_rst_n(I_rst_n),
