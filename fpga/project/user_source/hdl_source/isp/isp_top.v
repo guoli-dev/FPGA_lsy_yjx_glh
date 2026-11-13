@@ -784,7 +784,7 @@ module color_detect_96 #(
     function [7:0] f_rmar;
         input [7:0] r;
         begin
-            f_rmar = ({3'b0, r} + {3'b0, r, 2'b0}) >> 4;    // 31.25%（原厂值，= 5r/16）
+            f_rmar = (r >> 2) + (r >> 3) + (r >> 4);       // 43.75%（= 7r/16），配饱和度增强后的比例
         end
     endfunction
     function is_red;
