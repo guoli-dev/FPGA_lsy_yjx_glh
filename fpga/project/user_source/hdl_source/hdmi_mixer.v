@@ -1449,52 +1449,36 @@ module hdmi_mixer #(
     //   位宽: y 最大 159, 159*160 = 25440 -> 15 位够 (ROM 地址就是 15 位)。
     //   C_logo_in 为假时地址会溢出回绕, 但那时 R1_logo_in=0 -> S_logo_on_r 必为 0。
     // ========================================================================
-    // ========================================================================
-    // Logo 通路 —— 2026-11-13 改成游程解码
-    //
-    // 原来：C_logo_addr = y*160 + x  ->  6387 条 case 的 ROM（1672 LUT）-> 寄存
-    // 现在：ROM 存 1024 段游程 {起始x, 长度, 颜色}，解码器跟着像素 x 逐段推进。
-    //
-    // ★ 地址：Logo 实际只占第 34~127 行、第 7~152 列（94 x 146）。
-    //   行内第 row 行的段起点 = row*18（每行补齐到 18 段，无数据的段 len=0）。
-    // ★ 时序：仍是两级 —— 第 1 级算出段地址并寄存，第 2 级读 ROM 出来比较，
-    //   和原来 "地址寄存 -> 组合 ROM -> 再寄存" 一样深，Logo 位置不会偏。
-    // ========================================================================
     wire        C_logo_in   = (S_x >= LOGO_X) && (S_x < (LOGO_X + LOGO_W)) &&
                               (S_y >= LOGO_Y) && (S_y < (LOGO_Y + LOGO_H));
-    wire [7:0]  C_lx        = S_x[7:0] - 8'd7;    // 相对 Logo 左边界
-    wire [7:0]  C_ly        = S_y[7:0] - 8'd34;   // 相对 Logo 上边界
-    wire [10:0] C_row_base  = C_ly * 11'd18;      // 每行 18 段
-
-    // 段状态：S_seg 是当前段号，S_lx/S_ly 是延迟一拍的坐标（和 ROM 输出对齐）
-    reg  [4:0] S_seg;
-    reg  [7:0] S_lx;
-    reg  [7:0] S_ly;
-
-    // 地址组合给出（不再寄存一层）——ROM 自带的寄存器正好顶替原来的第 1 级
-    wire [10:0] C_rowb = C_ly * 11'd18;
-    // 原 y*160 + x 的地址（和最初版本完全一致，只是数据搬进了 ERAM）
     wire [11:0] C_logo_x    = S_x - LOGO_X;
     wire [11:0] C_logo_y    = S_y - LOGO_Y;
     wire [14:0] C_logo_addr = (C_logo_y << 7) + (C_logo_y << 5) + C_logo_x;
 
-    reg         R1_logo_in;
-
-    // ROM 自带一级寄存，正好顶替原来"地址寄存"那一级，总延迟仍是 2 拍
-    wire [24:0] C_logo_pixel;
-    anlogic_logo_rom_mem u_anlogic_logo_rom_mem(
-        .I_clk  ( I_clk        ),
-        .I_addr ( C_logo_addr  ),
-        .O_pixel( C_logo_pixel )
-    );
+    // ---- 第 1 级: 在不在 Logo 区内 + ROM 地址 ----
+    reg        R1_logo_in;
+    reg [14:0] R1_logo_addr;
 
     always @(posedge I_clk or negedge I_rst_n) begin
-        if(!I_rst_n) R1_logo_in <= 1'b0;
-        else         R1_logo_in <= I_logo_en && C_logo_in;
+        if(!I_rst_n) begin
+            R1_logo_in   <= 1'b0;
+            R1_logo_addr <= 15'd0;
+        end else begin
+            // I_logo_en 也在这里并进去 —— 按键"一键清屏"要图标和文字一起消失
+            R1_logo_in   <= I_logo_en && C_logo_in;
+            R1_logo_addr <= C_logo_addr;
+        end
     end
 
-    reg        S_logo_on_r;
-    reg [23:0] S_logo_col_r;
+    // ---- 第 2 级: ROM 读出 ----
+    wire [24:0] C_logo_pixel;
+    anlogic_logo_rom u_anlogic_logo_rom(
+        .I_addr  ( R1_logo_addr  ),
+        .O_pixel ( C_logo_pixel  )
+    );
+
+    reg        S_logo_on_r;      // 本像素要不要画 Logo
+    reg [23:0] S_logo_col_r;     // Logo 像素颜色
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
