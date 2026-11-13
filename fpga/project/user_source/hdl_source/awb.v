@@ -137,9 +137,9 @@ localparam        FIXED_WB_ONLY    = 1'b0;  // 诊断开关, 定位完保持 0
   reg  [31:0]         sum_b[0:3];
 
   
-  wire  [95:0]        data_d0 ;
-  wire                valid_d0;
-  wire                I_tuser_r0;    
+  reg  [95:0]        data_d0 ;
+  reg                valid_d0;
+  reg                I_tuser_r0;
 
   reg                 I_tuser_r1;
 
@@ -364,21 +364,24 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
       );
 
      
-    signal_delay #(
-        .IMG_HEIGHT   (IMG_HEIGHT),
-        .IMG_WIDTH    (IMG_WIDTH ),
-        .DATA_WIDTH   (96  ),
-        .DELAY_CYCLE  (50)
-    )signal_delay_d (
-        /*input                       */ .I_clk  (I_clk  ),
-        /*input                       */ .I_rst_n(I_rst_n),
-        /*input                       */ .I_tuser(I_tuser),  //synthesis keep 
-        /*input  wire                 */ .I_valid(I_tvalid_r1),  //synthesis keep 
-        /*input  wire [DATA_WIDTH-1:0]*/ .I_data (I_tdata_d1 ),   //synthesis keep 
-        /*output wire                 */ .O_valid(valid_d0   ),  //synthesis keep 
-        /*output wire [DATA_WIDTH-1:0]*/ .O_data (data_d0    ),   //synthesis keep 
-        /*output wire                 */ .O_tuser(I_tuser_r0 )
-    );
+    // 2026-11-13: 原来这里是一条 50 拍 x 96 位的延迟线，用来和 IP 除法器的 50 拍
+    // 延迟对齐，让"像素"和"刚算出来的增益"同时到达。
+    // 现在增益已经是**整帧恒定**（帧头锁存一次，整帧不变），对齐就没有意义了；
+    // 而这条延迟线内部是 96 位 x 2048 深的 ERAM IP，实际只用 50 个位置，
+    // 白占 10 块 ERAM + 80 个 LUT（构建报告 u_awb 的 eram=10 就是它）。
+    // 改成 1 拍寄存：valid/data/tuser 仍然同步延后，相对关系不变。
+    // 代价：AWB 输出整体提前 49 拍，下游所有分支一起平移，彼此对齐不变。
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            data_d0    <= 96'd0;
+            valid_d0   <= 1'b0;
+            I_tuser_r0 <= 1'b0;
+        end else begin
+            data_d0    <= I_tdata_d1;
+            valid_d0   <= I_tvalid_r1;
+            I_tuser_r0 <= I_tuser;
+        end
+    end
 
     
 
