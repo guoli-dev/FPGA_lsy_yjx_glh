@@ -744,7 +744,7 @@ module color_detect_96 #(
     function [7:0] f_rmar;
         input [7:0] r;
         begin
-            f_rmar = r >> 1;                                // 50% 饱和度门限
+            f_rmar = ({3'b0, r} + {3'b0, r, 2'b0}) >> 4;    // 31.25%（原厂值，= 5r/16）
         end
     endfunction
     function is_red;
