@@ -533,6 +533,36 @@ module gamma_96 #(
         gam8(I_tdata[23:16]), gam8(I_tdata[15:8]),  gam8(I_tdata[7:0])
     };
 
+    // 2026-11-13 方案 A：饱和度增强。链路里原本完全没有饱和度这一级，
+    // 而 AWB 是灰世界（会把画面平均拉成中性），叠加起来就是颜色发灰发淡。
+    //     mid = (r + g + b) >> 2          （用 >>2 代替 /3，省一个除法）
+    //     out = c + ((c - mid) >> 3)      （每个通道离灰值再远 12.5%）
+    // 纯移位加法，0 乘法器；放在 gamma 之后、算法分支之前，显示和识别共用。
+    function [7:0] sat8;
+        input [7:0] c;
+        input [9:0] mid;
+        reg   [9:0] t;
+        begin
+            if ({2'b0, c} >= mid)
+                t = {2'b0, c} + (({2'b0, c} - mid) >> 3);
+            else
+                t = {2'b0, c} - ((mid - {2'b0, c}) >> 3);
+            sat8 = (t > 10'd255) ? 8'hff : t[7:0];
+        end
+    endfunction
+
+    wire [9:0] S_m0 = ({2'b0,S_gam[95:88]} + {2'b0,S_gam[87:80]} + {2'b0,S_gam[79:72]}) >> 2;
+    wire [9:0] S_m1 = ({2'b0,S_gam[71:64]} + {2'b0,S_gam[63:56]} + {2'b0,S_gam[55:48]}) >> 2;
+    wire [9:0] S_m2 = ({2'b0,S_gam[47:40]} + {2'b0,S_gam[39:32]} + {2'b0,S_gam[31:24]}) >> 2;
+    wire [9:0] S_m3 = ({2'b0,S_gam[23:16]} + {2'b0,S_gam[15: 8]} + {2'b0,S_gam[ 7: 0]}) >> 2;
+
+    wire [95:0] S_sat = {
+        sat8(S_gam[95:88], S_m0), sat8(S_gam[87:80], S_m0), sat8(S_gam[79:72], S_m0),
+        sat8(S_gam[71:64], S_m1), sat8(S_gam[63:56], S_m1), sat8(S_gam[55:48], S_m1),
+        sat8(S_gam[47:40], S_m2), sat8(S_gam[39:32], S_m2), sat8(S_gam[31:24], S_m2),
+        sat8(S_gam[23:16], S_m3), sat8(S_gam[15: 8], S_m3), sat8(S_gam[ 7: 0], S_m3)
+    };
+
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n) begin
             O_tlast  <= 1'b0;
@@ -543,7 +573,7 @@ module gamma_96 #(
             O_tlast  <= I_tlast;
             O_tuser  <= I_tuser;
             O_tvalid <= I_tvalid;
-            O_tdata  <= I_bypass ? I_tdata : S_gam;
+            O_tdata  <= I_bypass ? I_tdata : S_sat;
         end
     end
 
