@@ -810,17 +810,19 @@ module color_detect_96 #(
         //  取不到中间档 —— 而 12.5% 和 25% 两边都不对。)
         reg [9:0] gm;
         begin
-            gm = ({2'b0, g} + {1'b0, g, 1'b0}) >> 4;
+            gm = (g >> 2) + (g >> 3) + (g >> 4);   // 2026-11-13: 18.75% -> 43.75%，和红/蓝统一
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= gm) && ((g - b) >= gm);
         end
     endfunction
     function is_blue;
         input [7:0] r, g, b;
+        reg [7:0] b_m;
         begin
+            b_m = (b >> 2) + (b >> 3) + (b >> 4);   // 43.75%，配饱和度增强
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
-                      ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
-                      ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
+                      ((b - r) >= b_m) && ((b - g) >= b_m);   // 2026-11-13: 25% -> 43.75%
+
         end
     endfunction
 
@@ -1447,7 +1449,9 @@ module classify_overlay_96 #(
     endfunction
     function is_blue;
         input [7:0] r, g, b;
+        reg [7:0] b_m;
         begin
+            b_m = (b >> 2) + (b >> 3) + (b >> 4);   // 43.75%，配饱和度增强
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
                       ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
                       ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
