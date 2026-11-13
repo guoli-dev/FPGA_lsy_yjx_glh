@@ -833,28 +833,38 @@ module color_detect_96 #(
     // 全非负比较，绕开有符号/无符号混用的坑：
     //   cr_raw = 128R - 107G - 21B >= CR_T
     //   <==>  128R >= 107G + 21B + CR_T      (两边都是非负)
-    localparam [15:0] CR_T = 16'd5500;   // Cr>=150 约等于 cr_raw>=5632，这里略松
-    localparam [15:0] CB_T = 16'd5500;
-
+    // 2026-11-13: YCbCr 那版上板后"只有蓝色能识别，红绿全没有"，回退到这里。
+    //
+    // 判据：主导通道比另外两个都高出自身值的 31.25%（5/16）。
+    //   红: r 最大 且 (r-g) >= 5r/16 且 (r-b) >= 5r/16
+    //   绿: g 最大 且 (g-r) >= 5g/16 且 (g-b) >= 5g/16
+    //   蓝: b 最大 且 (b-r) >= 5b/16 且 (b-g) >= 5b/16
+    // 5x/16 = (x>>2) + (x>>4)，纯移位加法，0 乘法 0 除法。
     function is_red;
         input [7:0] r, g, b;
+        reg   [7:0] m;
         begin
+            m = (r >> 2) + (r >> 4);
             is_red = (r >= MIN_BRIGHT) && (r >= g) && (r >= b) &&
-                     ({r, 7'b0} >= ((g * 16'd107) + (b * 16'd21) + CR_T));
+                     ((r - g) >= m) && ((r - b) >= m);
         end
     endfunction
     function is_green;
         input [7:0] r, g, b;
+        reg   [7:0] m;
         begin
-            // G 最大已经天然排除了红/蓝，不再需要额外色度条件
-            is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b);
+            m = (g >> 2) + (g >> 4);
+            is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
+                       ((g - r) >= m) && ((g - b) >= m);
         end
     endfunction
     function is_blue;
         input [7:0] r, g, b;
+        reg   [7:0] m;
         begin
+            m = (b >> 2) + (b >> 4);
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
-                      ({b, 7'b0} >= ((r * 16'd43) + (g * 16'd85) + CB_T));
+                      ((b - r) >= m) && ((b - g) >= m);
         end
     endfunction
 
