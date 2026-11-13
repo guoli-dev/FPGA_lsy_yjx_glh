@@ -793,7 +793,7 @@ module color_detect_96 #(
     function [7:0] f_rmar;
         input [7:0] r;
         begin
-            f_rmar = (r >> 2) + (r >> 3);                // 37.5%（= 6r/16），配实心度判据后放宽
+            f_rmar = (r >> 2) + (r >> 4);                // 31.25%（= 5r/16），补偿 gamma 提亮带来的相对饱和度下降
         end
     endfunction
     function is_red;
@@ -819,7 +819,7 @@ module color_detect_96 #(
         //  取不到中间档 —— 而 12.5% 和 25% 两边都不对。)
         reg [9:0] gm;
         begin
-            gm = (g >> 2) + (g >> 3);   // 2026-11-13: 43.75% -> 37.5%，配实心度判据
+            gm = (g >> 2) + (g >> 4);   // 2026-11-13: 37.5% -> 31.25%，补偿 gamma 提亮
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= gm) && ((g - b) >= gm);
         end
@@ -828,7 +828,7 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg [7:0] b_m;
         begin
-            b_m = (b >> 2) + (b >> 3);   // 2026-11-13: 43.75% -> 37.5%，配实心度判据
+            b_m = (b >> 2) + (b >> 4);   // 2026-11-13: 37.5% -> 31.25%，补偿 gamma 提亮
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
                       ((b - r) >= b_m) && ((b - g) >= b_m);   // 2026-11-13: 25% -> 43.75%
 
@@ -1476,7 +1476,7 @@ module classify_overlay_96 #(
         input [7:0] r, g, b;
         reg [7:0] b_m;
         begin
-            b_m = (b >> 2) + (b >> 3);   // 2026-11-13: 43.75% -> 37.5%，配实心度判据
+            b_m = (b >> 2) + (b >> 4);   // 2026-11-13: 37.5% -> 31.25%，补偿 gamma 提亮
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
                       ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
                       ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
