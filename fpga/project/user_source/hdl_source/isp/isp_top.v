@@ -832,15 +832,31 @@ module color_detect_96 #(
     wire [7:0] r2 = I_tdata[47:40], g2 = I_tdata[39:32], b2 = I_tdata[31:24];
     wire [7:0] r3 = I_tdata[23:16], g3 = I_tdata[15:8],  b3 = I_tdata[7:0];
 
-    wire hr0 = is_red  (r0,g0,b0), hg0 = is_green(r0,g0,b0), hb0 = is_blue(r0,g0,b0);
-    wire hr1 = is_red  (r1,g1,b1), hg1 = is_green(r1,g1,b1), hb1 = is_blue(r1,g1,b1);
-    wire hr2 = is_red  (r2,g2,b2), hg2 = is_green(r2,g2,b2), hb2 = is_blue(r2,g2,b2);
-    wire hr3 = is_red  (r3,g3,b3), hg3 = is_green(r3,g3,b3), hb3 = is_blue(r3,g3,b3);
+    // 2026-11-13: 改成"组内 4 像素先平均、再判一次色"（水平 4:1 下采样）。
+    //
+    // 原来 4 个像素各判一次（3 色 x 4 像素 = 12 份判色逻辑），单像素噪声可以
+    // 单独触发判据 —— 这是色块不稳的一大来源。改成先做 4:1 平均再判：
+    //   · 水平噪声被平滑 4 倍；
+    //   · 判色逻辑从 12 份降到 3 份，**省面积**（不是花面积）；
+    //   · 坐标体系完全不用改 —— CCL 本来就是一拍处理一个 4 像素组
+    //     (base_x = x_grp*4)，所以 bbox 精度本来就在 4 像素粒度上。
+    // 代价：组内不再有亚像素边界（原来 hit 的 4 位能给出 4px 内的左右边界）。
+    wire [9:0] rav = {2'b0,r0} + {2'b0,r1} + {2'b0,r2} + {2'b0,r3};
+    wire [9:0] gav = {2'b0,g0} + {2'b0,g1} + {2'b0,g2} + {2'b0,g3};
+    wire [9:0] bav = {2'b0,b0} + {2'b0,b1} + {2'b0,b2} + {2'b0,b3};
+    wire [7:0] sav_r = rav[9:2];   // 4 像素平均
+    wire [7:0] sav_g = gav[9:2];
+    wire [7:0] sav_b = bav[9:2];
+
+    wire hr = is_red  (sav_r,sav_g,sav_b);
+    wire hg = is_green(sav_r,sav_g,sav_b);
+    wire hb = is_blue (sav_r,sav_g,sav_b);
 
     // I_hit[3] = 组内第 0 个像素(最左), I_hit[0] = 第 3 个像素
-    wire [3:0] hit_r = {hr0,hr1,hr2,hr3};
-    wire [3:0] hit_g = {hg0,hg1,hg2,hg3};
-    wire [3:0] hit_b = {hb0,hb1,hb2,hb3};
+    // 现在整组同判，4 位一起置位 —— CCL 的 MIN_RUN=3 因此等价于"组被判中"。
+    wire [3:0] hit_r = {4{hr}};
+    wire [3:0] hit_g = {4{hg}};
+    wire [3:0] hit_b = {4{hb}};
 
     // ---- 判色 -> 跟踪 之间插一级流水 (2026-10-09) --------------------------
     // 原来判色函数 (is_red/is_green/is_blue, 每像素 5 个条件 x 4 像素 x 3 色) 和
