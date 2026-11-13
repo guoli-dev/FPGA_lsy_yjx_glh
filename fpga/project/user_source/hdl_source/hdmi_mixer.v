@@ -1490,8 +1490,11 @@ module hdmi_mixer #(
             S_seg <= 5'd0;
             S_lx  <= 8'd0;
             S_ly  <= 8'd0;
+        end else if (!C_logo_in) begin
+            // 不在 Logo 区域内（消隐 / 区域外）：段号归零，等下一行从头来
+            S_seg <= 5'd0;
         end else begin
-            R1_logo_in <= I_logo_en && C_logo_in;
+            R1_logo_in <= I_logo_en;
             S_lx <= C_lx;
             S_ly <= C_ly;
             if (C_ly != S_ly) begin
@@ -1500,7 +1503,7 @@ module hdmi_mixer #(
                 S_seg <= S_seg + 5'd1;              // 越过本段 -> 下一段
             end
         end
-    end
+        end
 
     // 命中判断：u S_lx 是上一拍的 x，与 C_seg（上一拍地址的段）严格对齐
     wire C_logo_hit = (S_lx >= C_seg[39:32]) && (S_lx <= C_seg_end);
