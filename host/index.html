@@ -487,6 +487,125 @@
 
     /* 侧栏整体压暗，和主区分开层次 */
     aside, .sidebar, .side, .rail { background: rgba(6, 11, 20, 0.82) !important; border-right: 1px solid var(--hairline); }
+    /* ============================================================
+       2026-11-13 第四轮：档案/内部系统风（参考 hvk.3xd.com.cn）
+       要点：编号分区、大标题、编号列表、mono 小标签、箭头
+       ============================================================ */
+
+    /* 分区自动编号：每张卡片按出现顺序 01 / 02 / 03 … */
+    .wrap { counter-reset: sec; }
+    .content .card .head h2::before,
+    .content > .col > .card .head h2::before,
+    .wrap > .card > .head h2::before {
+      counter-increment: sec;
+      content: counter(sec, decimal-leading-zero);
+      position: static;
+      width: auto; height: auto; margin: 0 10px 0 0;
+      background: none; box-shadow: none;
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      opacity: .9;
+      display: inline-block;
+    }
+    .head h2 {
+      display: flex;
+      align-items: baseline;
+      padding-left: 0;
+      font-size: 16px;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+    }
+    /* 编号后加一道斜杠分隔，和参考站的 "01 / 企业愿景" 一致 */
+    .head h2::after {
+      content: "/";
+      margin: 0 8px 0 2px;
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      order: -1;
+    }
+    /* 让编号 + 斜杠都排在标题前面 */
+    .head h2 { gap: 0; }
+    .head h2::before { order: -2; }
+
+    /* 右上角小标签：等宽大写，像档案编号 */
+    .head .hint {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+
+    /* 识别结果：改成编号档案行 01 / 02 / 03 */
+    .content .card .block-row { counter-increment: row; }
+    .content .card .block-row::before {
+      counter-increment: row;
+      content: counter(row, decimal-leading-zero);
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--faint);
+      letter-spacing: 0.1em;
+      margin-right: 10px;
+      opacity: .85;
+    }
+    .content .card:has(.block-row) { counter-reset: row; }
+    .block-row {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      border-bottom: 1px solid rgba(90, 200, 255, 0.07);
+    }
+    .block-row:last-child { border-bottom: none; }
+    .block-row .nm { flex: 1 1 auto; }
+    .block-row .val { margin-left: auto; }
+
+    /* 页头：加一条档案式 meta 分隔 */
+    .title-group { position: relative; padding-bottom: 14px; }
+    .title-group::after {
+      content: "";
+      position: absolute; left: 0; bottom: 0;
+      width: 120px; height: 1px;
+      background: linear-gradient(90deg, var(--accent), transparent);
+    }
+
+    /* 按键/链接：右侧箭头 */
+    .btn::after {
+      content: "↗";
+      margin-left: 8px;
+      font-family: var(--font-mono);
+      opacity: .85;
+    }
+
+    /* 顶部四个导航：mono 大写小字距，像内部系统菜单 */
+    .topnav, .topnav * {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    /* 指标卡的 key：mono 大写 */
+    .tile .k {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    /* 面板内边距略放大，呼吸感更接近参考站 */
+    .card { padding: 20px 22px; }
+    .head { margin-bottom: 14px; }
+
+    /* KV 行：左侧 key 用 mono 大写 */
+    .kv .k {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
 </style>
 
 <div class="stage" aria-hidden="true">
