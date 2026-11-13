@@ -721,6 +721,93 @@
 
     /* 参数区的 label 也提亮一点 */
     .field .k, .field label { color: var(--muted) !important; }
+    /* ============================================================
+       2026-11-14 第四轮：酷感增强（纯 CSS，全部可关）
+       原则：动效克制，只加"活着的仪表盘"感觉，不再改布局
+       ============================================================ */
+
+    /* ① 色块图：缓慢移动的扫描带，像雷达在工作 */
+    .plot::after {
+      content: "";
+      position: absolute; left: 0; right: 0; top: -30%;
+      height: 30%;
+      pointer-events: none;
+      background: linear-gradient(180deg,
+        transparent,
+        rgba(34, 211, 238, 0.10) 45%,
+        rgba(34, 211, 238, 0.18) 50%,
+        rgba(34, 211, 238, 0.10) 55%,
+        transparent);
+      animation: scan 5.5s linear infinite;
+    }
+    @keyframes scan {
+      0%   { transform: translateY(0);    opacity: 0; }
+      10%  { opacity: 1; }
+      90%  { opacity: 1; }
+      100% { transform: translateY(430%); opacity: 0; }
+    }
+
+    /* ② 指标数字：数值变化时轻微跳动（用 CSS 动画挂在元素上，JS 不用改） */
+    .tile .v { transition: color .3s ease, text-shadow .3s ease; }
+    .tile:hover .v {
+      color: #b8f4ff;
+      text-shadow: 0 0 26px rgba(34, 211, 238, 0.9);
+    }
+
+    /* ③ 当前模式：呼吸光环 */
+    .mode-btn.active, .mode-btn[aria-pressed="true"] {
+      animation: modeglow 2.4s ease-in-out infinite;
+    }
+    @keyframes modeglow {
+      0%, 100% { box-shadow: 0 0 14px rgba(34, 211, 238, 0.18); }
+      50%      { box-shadow: 0 0 30px rgba(34, 211, 238, 0.42); }
+    }
+
+    /* ④ 卡片四角：HUD 角标，悬浮时才亮 */
+    .card::after {
+      content: "";
+      position: absolute; inset: 6px;
+      pointer-events: none;
+      border-radius: 8px;
+      background:
+        linear-gradient(#22d3ee, #22d3ee) left  top    / 14px 1px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) left  top    / 1px 14px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) right top    / 14px 1px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) right top    / 1px 14px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) left  bottom / 14px 1px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) left  bottom / 1px 14px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) right bottom / 14px 1px no-repeat,
+        linear-gradient(#22d3ee, #22d3ee) right bottom / 1px 14px no-repeat;
+      opacity: 0;
+      transition: opacity .25s ease;
+    }
+    .card:hover::after { opacity: .85; }
+
+    /* ⑤ 顶部连接状态点：连上后变绿并常亮（配合原有呼吸动画） */
+    .dot.online, #headerDot.online { background: #34d399; }
+
+    /* ⑥ 交互记录新条目：淡入，别突然蹦出来 */
+    .log > * { animation: logfade .35s ease-out both; }
+    @keyframes logfade {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    /* ⑦ 标题下的渐变线：轻微流动 */
+    .title-group::after {
+      background: linear-gradient(90deg, var(--accent), rgba(34,211,238,0.25), transparent);
+      background-size: 200% 100%;
+      animation: lineflow 4s linear infinite;
+    }
+    @keyframes lineflow {
+      0%   { background-position: 0 0; }
+      100% { background-position: 200% 0; }
+    }
+
+    /* ⑧ 尊重系统设置：用户开了"减少动态效果"就全关 */
+    @media (prefers-reduced-motion: reduce) {
+      .plot::after, .mode-btn.active, .log > *, .title-group::after { animation: none !important; }
+    }
 </style>
 
 <div class="stage" aria-hidden="true">
