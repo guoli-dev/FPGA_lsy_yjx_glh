@@ -153,6 +153,108 @@
     .metrics { grid-template-columns: repeat(3, 1fr); } .content { grid-template-columns: 1fr; }
   }
   @media (max-width: 560px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+    /* ===== 2026-11-13 视觉打磨（纯 CSS，不改结构） ===== */
+
+    /* 1) 背景：从纯色改成柔和的双点径向渐变，玻璃卡片才有层次 */
+    body {
+      background:
+        radial-gradient(1200px 620px at 8% -10%, rgba(0, 102, 204, 0.10), transparent 60%),
+        radial-gradient(900px 520px at 102% 8%, rgba(90, 200, 250, 0.12), transparent 62%),
+        var(--bg);
+      background-attachment: fixed;
+    }
+
+    /* 2) 指标数字：加大、等宽、收紧字距，读数更"仪表" */
+    .tile .v {
+      font-size: 26px;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      font-family: var(--font-mono);
+      font-weight: 700;
+    }
+    .tile .k {
+      letter-spacing: 0.04em;
+      text-transform: none;
+    }
+    /* 第一个指标（FPGA 模式）是答辩主角，给它更高的权重 */
+    .metrics .tile:first-child {
+      background: linear-gradient(180deg, rgba(0, 102, 204, 0.10), rgba(255, 255, 255, 0.55));
+      border: 1px solid rgba(0, 102, 204, 0.22);
+    }
+    .metrics .tile:first-child .v { color: var(--accent); }
+    .metrics .tile:first-child .v .u { color: var(--accent); opacity: .75; }
+
+    /* 3) 卡片：悬浮时轻微上浮 + 阴影加深，鼠标划过有反馈 */
+    .card {
+      transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+      backdrop-filter: blur(18px) saturate(1.4);
+      -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    }
+    .card:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 40px rgba(29, 29, 31, 0.12), 0 3px 8px rgba(29, 29, 31, 0.05);
+      background: var(--panel-strong);
+    }
+
+    /* 4) 状态灯：连接中缓慢呼吸，别是死点 */
+    .dot { box-shadow: 0 0 0 0 rgba(255, 159, 10, 0.55); animation: breathe 2.2s ease-in-out infinite; }
+    @keyframes breathe {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255, 159, 10, 0.45); }
+      50%      { box-shadow: 0 0 0 5px rgba(255, 159, 10, 0); }
+    }
+
+    /* 5) 色块位置图：加一层极淡的坐标网格，读数更直观 */
+    .plot {
+      background-image:
+        linear-gradient(rgba(29,29,31,0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(29,29,31,0.045) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(250,250,252,0.75), rgba(250,250,252,0.45));
+      background-size: 64px 36px, 64px 36px, 100% 100%;
+    }
+    .plot .title {
+      letter-spacing: 0.02em;
+      text-shadow: 0 1px 0 rgba(255,255,255,0.8);
+    }
+
+    /* 6) 空状态更淡，避免"未收到数据"抢注意力 */
+    .block-row .val { font-variant-numeric: tabular-nums; }
+    .block-row .val:empty::after { content: "—"; color: var(--faint); }
+
+    /* 7) 标题：加一条极细的蓝色引导线，层级更清楚 */
+    .head h2 {
+      position: relative;
+      padding-left: 10px;
+    }
+    .head h2::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 50%;
+      width: 3px; height: 13px;
+      margin-top: -6.5px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, var(--accent), rgba(0,102,204,0.35));
+    }
+    .head .hint { opacity: .8; }
+
+    /* 8) 滚动条：细一点，别破坏玻璃质感 */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(29,29,31,0.16);
+      border-radius: 8px;
+      border: 3px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(29,29,31,0.28); background-clip: content-box; }
+    ::-webkit-scrollbar-track { background: transparent; }
+
+    /* 9) 深色环境（投影/现场灯光暗）时留个开关用，不影响默认浅色 */
+    html[data-theme="dark"] body {
+      background:
+        radial-gradient(1200px 620px at 8% -10%, rgba(0,102,204,0.22), transparent 60%),
+        radial-gradient(900px 520px at 102% 8%, rgba(90,200,250,0.16), transparent 62%),
+        #0b0c10;
+      color: #f5f5f7;
+    }
 </style>
 
 <div class="stage" aria-hidden="true">
