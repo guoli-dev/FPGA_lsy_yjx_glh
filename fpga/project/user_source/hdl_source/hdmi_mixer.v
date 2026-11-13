@@ -1473,40 +1473,25 @@ module hdmi_mixer #(
 
     // 地址组合给出（不再寄存一层）——ROM 自带的寄存器正好顶替原来的第 1 级
     wire [10:0] C_rowb = C_ly * 11'd18;
-    reg         R1_logo_in;
-    wire [10:0] C_addr = C_rowb + {6'd0, S_seg};
+    // 原 y*160 + x 的地址（和最初版本完全一致，只是数据搬进了 ERAM）
+    wire [11:0] C_logo_x    = S_x - LOGO_X;
+    wire [11:0] C_logo_y    = S_y - LOGO_Y;
+    wire [14:0] C_logo_addr = (C_logo_y << 7) + (C_logo_y << 5) + C_logo_x;
 
-    wire [39:0] C_seg;
-    anlogic_logo_rle_rom u_anlogic_logo_rle_rom(
-        .I_clk ( I_clk  ),
-        .I_addr( C_addr ),
-        .O_seg ( C_seg  )
+    reg         R1_logo_in;
+
+    // ROM 自带一级寄存，正好顶替原来"地址寄存"那一级，总延迟仍是 2 拍
+    wire [24:0] C_logo_pixel;
+    anlogic_logo_rom_mem u_anlogic_logo_rom_mem(
+        .I_clk  ( I_clk        ),
+        .I_addr ( C_logo_addr  ),
+        .O_pixel( C_logo_pixel )
     );
 
-    wire [7:0] C_seg_end = C_seg[39:32] + C_seg[31:24];
-
     always @(posedge I_clk or negedge I_rst_n) begin
-        if(!I_rst_n) begin
-            S_seg <= 5'd0;
-            S_lx  <= 8'd0;
-            S_ly  <= 8'd0;
-        end else if (!C_logo_in) begin
-            // 不在 Logo 区域内（消隐 / 区域外）：段号归零，等下一行从头来
-            S_seg <= 5'd0;
-        end else begin
-            R1_logo_in <= I_logo_en;
-            S_lx <= C_lx;
-            S_ly <= C_ly;
-            if (C_ly != S_ly) begin
-                S_seg <= 5'd0;                      // 新的一行，回到第 0 段
-            end else if (S_lx > C_seg_end) begin
-                S_seg <= S_seg + 5'd1;              // 越过本段 -> 下一段
-            end
-        end
-        end
-
-    // 命中判断：u S_lx 是上一拍的 x，与 C_seg（上一拍地址的段）严格对齐
-    wire C_logo_hit = (S_lx >= C_seg[39:32]) && (S_lx <= C_seg_end);
+        if(!I_rst_n) R1_logo_in <= 1'b0;
+        else         R1_logo_in <= I_logo_en && C_logo_in;
+    end
 
     reg        S_logo_on_r;
     reg [23:0] S_logo_col_r;
@@ -1516,8 +1501,8 @@ module hdmi_mixer #(
             S_logo_on_r  <= 1'b0;
             S_logo_col_r <= 24'd0;
         end else begin
-            S_logo_on_r  <= R1_logo_in && C_logo_hit;
-            S_logo_col_r <= C_seg[23:0];
+            S_logo_on_r  <= R1_logo_in && C_logo_pixel[24];
+            S_logo_col_r <= C_logo_pixel[23:0];
         end
     end
 
