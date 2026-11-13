@@ -92,6 +92,9 @@ data128_96 u_data128_96 (
 );
 
 // AE observes pre-AWB, pre-gamma pixels without modifying the video stream.
+// 2026-11-13: AE 帧均值（第一步，只测量，不闭环）
+wire [15:0] S_ae_frame_sum;
+
 aec_stats_96 u_aec_stats (
     .I_clk          (axi4s_video_aclk),
     .I_rst_n        (I_rst_n),
@@ -100,7 +103,8 @@ aec_stats_96 u_aec_stats (
     .I_tdata        (m_aixs_tdata_96),
     .O_too_bright   (O_ae_too_bright),
     .O_too_dark     (O_ae_too_dark),
-    .O_frame_toggle (O_ae_frame_toggle)
+    .O_frame_toggle (O_ae_frame_toggle),
+    .O_frame_sum    (S_ae_frame_sum)
 );
 
 // ---- 2026-10-12: AWB 换成 One 工程那版改良实现 (awb.v 已整体替换) ----------
@@ -589,7 +593,11 @@ module aec_stats_96 (
     input      [95:0] I_tdata,
     output reg        O_too_bright,
     output reg        O_too_dark,
-    output reg        O_frame_toggle
+    output reg        O_frame_toggle,
+    // 2026-11-13: 整帧绿通道累加（约 900 个采样，每个取 green[7:2]）。
+    // 均值 = O_frame_sum / 900 * 4。给 FPGA 侧 AE 闭环用，零额外成本——
+    // 这个累加在模块里本来就有，只是之前没往外送。
+    output reg [15:0] O_frame_sum
 );
 
     localparam [9:0]  CLIP_ENTER = 10'd29;    // > 900/32
@@ -612,11 +620,13 @@ module aec_stats_96 (
             S_clip        <= 10'd0;
             S_sum_g6      <= 16'd0;
             S_frame_ready <= 1'b0;
+            O_frame_sum   <= 16'd0;
         end else if (I_tuser) begin
             S_phase       <= 8'd0;
             S_clip        <= 10'd0;
             S_sum_g6      <= 16'd0;
             S_frame_ready <= 1'b1;
+            O_frame_sum   <= S_sum_g6;   // 帧首：交出上一整帧的绿通道累加
         end else if (I_tvalid) begin
             S_phase <= S_phase + 8'd1;
             if (S_take) begin
