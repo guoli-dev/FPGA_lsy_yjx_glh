@@ -2098,7 +2098,12 @@ module color_box_ccl_96 #(
                     w12_merge ? 64'd0
                               : mkbox(W2_on, W2_cnt, W2_x0, W2_x1, W2_cx, W2_y0, W2_y1, W2_cy),
                     w12_merge ? mkbox(1'b1, w12_cnt, w12_x0, w12_x1, w12_cx, w12_y0, w12_y1, w12_cy)
-                              : mkbox(W1_on, W1_cnt, O_bx0, O_bx1, O_bcx, O_by0, O_by1, O_bcy) };
+                              // 2026-11-13: rank1 的十字改用**真质心** S_cx/S_cy。
+    // 质心在这个模块里早就算好了（T_sx/T_sy 累加 + 帧末移位减法除法, L2160/L2166），
+    // 但这里原来用的是 bbox 几何中心 O_bcx/O_bcy —— 色块呈 L 形、或框内混了背景时，
+    // 几何中心会落在没有颜色的地方，十字看着就在框外。
+    // S_cx/S_cy 比 bbox 晚一帧生效（除法在 tuser 之后才跑完），做视觉标记够用。
+    : mkbox(W1_on, W1_cnt, O_bx0, O_bx1, S_cx, O_by0, O_by1, S_cy) };
 
                 // (2) 锁存本帧排好序的 4 个 rank —— 此刻轨迹表里还是刚跑完那一帧的结果
                 W1_on  <= SRT1[4];  W1_cnt <= SRT1[22:5];
