@@ -784,7 +784,7 @@ module color_detect_96 #(
     function [7:0] f_rmar;
         input [7:0] r;
         begin
-            f_rmar = (r >> 2) + (r >> 3) + (r >> 4);       // 43.75%（= 7r/16），配饱和度增强后的比例
+            f_rmar = (r >> 2) + (r >> 3);                // 37.5%（= 6r/16），配实心度判据后放宽
         end
     endfunction
     function is_red;
@@ -810,7 +810,7 @@ module color_detect_96 #(
         //  取不到中间档 —— 而 12.5% 和 25% 两边都不对。)
         reg [9:0] gm;
         begin
-            gm = (g >> 2) + (g >> 3) + (g >> 4);   // 2026-11-13: 18.75% -> 43.75%，和红/蓝统一
+            gm = (g >> 2) + (g >> 3);   // 2026-11-13: 43.75% -> 37.5%，配实心度判据
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= gm) && ((g - b) >= gm);
         end
@@ -819,7 +819,7 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg [7:0] b_m;
         begin
-            b_m = (b >> 2) + (b >> 3) + (b >> 4);   // 43.75%，配饱和度增强
+            b_m = (b >> 2) + (b >> 3);   // 2026-11-13: 43.75% -> 37.5%，配实心度判据
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
                       ((b - r) >= b_m) && ((b - g) >= b_m);   // 2026-11-13: 25% -> 43.75%
 
@@ -1467,7 +1467,7 @@ module classify_overlay_96 #(
         input [7:0] r, g, b;
         reg [7:0] b_m;
         begin
-            b_m = (b >> 2) + (b >> 3) + (b >> 4);   // 43.75%，配饱和度增强
+            b_m = (b >> 2) + (b >> 3);   // 2026-11-13: 43.75% -> 37.5%，配实心度判据
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
                       ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
                       ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
@@ -1989,6 +1989,8 @@ module color_box_ccl_96 #(
         reg [11:0] bw, bh;
         reg [10:0] px0, px1;
         reg [ 9:0] py0, py1;
+        reg [23:0] barea, bpix;
+        reg        solid_ok;
         reg [10:0] ccx;
         reg [ 9:0] ccy;
         begin
@@ -2001,6 +2003,17 @@ module color_box_ccl_96 #(
             // 注意这只收紧"报不报框"，不影响 CCL 的轨迹跟踪。
             bw = {1'b0,x1} - {1'b0,x0} + 12'd1;
             bh = {2'b0,y1} - {2'b0,y0} + 12'd1;
+            // 2026-11-13: 实心度判据（照 OpenMV find_blobs 的 pixels_threshold 思路）
+            //   bbox 面积 和 实际像素数 同时看，两者之比就是实心度：
+            //     真色块  紧凑      -> 70~95%
+            //     木门/墙面 内部有纹理暗部 -> 30~50%
+            //     噪点团  稀疏      -> 10~20%
+            // 这是区分"木门"和"红皮书"的正确工具 —— 两者饱和度本来就重叠，
+            // 但实心度差得远。加了它，颜色门限就可以放宽，红皮书不再临界闪烁。
+            // 代价：1 个 12x12 乘法器 = 1 DSP（现在 DSP 12/40，余量充足）。
+            barea = bw * bh;              // bbox 面积
+            bpix  = {6'b0, cnt};          // 实际像素数
+            solid_ok = ({bpix[22:0], 1'b0} >= barea);   // cnt*2 >= bw*bh  <=>  实心度 >= 50%
             // 2026-11-13: 框向外扩 BOX_PAD 像素。门限偏高时只有目标最饱和的核心
             // 能过，边缘像素被背景稀释后过不了，框就比物体小一圈。这里不改判据
             // （改大了木门会回来），只把报出去的框向外补偿，超边界自动夹住。
@@ -2017,7 +2030,7 @@ module color_box_ccl_96 #(
             mkbox = { ccy, ccx,
                       (on && (cnt >= AREA_TH) && (cnt <= AREA_MAX)
                           && (bw >= 12'd8) && (bh >= 12'd8)
-                          && (bw <= (bh << 2)) && (bh <= (bw << 2))),
+                          && (bw <= (bh << 2)) && (bh <= (bw << 2)) && solid_ok),
                       px0, px1, py0, py1 };
         end
     endfunction
