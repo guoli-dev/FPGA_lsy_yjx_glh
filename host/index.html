@@ -606,6 +606,63 @@
       letter-spacing: 0.08em;
       color: var(--muted);
     }
+    /* ============================================================
+       2026-11-13 第五轮：修正上一版过火的样式
+       ============================================================ */
+
+    /* ① 按钮：退回克制样式，只在悬停时发光（之前两条青色横条太抢眼） */
+    .btn, button.btn {
+      background: rgba(16, 27, 45, 0.92) !important;
+      color: var(--accent) !important;
+      border: 1px solid rgba(34, 211, 238, 0.42) !important;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45) !important;
+      letter-spacing: 0.06em;
+      transition: background .16s ease, box-shadow .16s ease, color .16s ease;
+    }
+    .btn:hover, button.btn:hover {
+      background: rgba(34, 211, 238, 0.16) !important;
+      color: #eaf6ff !important;
+      box-shadow: 0 8px 24px rgba(34, 211, 238, 0.22) !important;
+    }
+
+    /* ② 编号：只在一处递增，修掉 02/04/06 和 05/05 的错乱 */
+    .content .card .block-row { counter-increment: none !important; }
+    .content .card .block-row::before { counter-increment: row; }
+    .content .card:has(.block-row) { counter-reset: row; }
+    /* 卡片编号：去掉 ::after 的斜杠，改由 ::before 里一次输出 */
+    .head h2::after { content: none !important; }
+    .head h2::before {
+      content: counter(sec, decimal-leading-zero) " / " !important;
+      counter-increment: sec;
+      order: -1;
+    }
+    .wrap { counter-reset: sec !important; }
+
+    /* ③ 顶部发白：把所有容器底色压成透明，让 body 的深色透上来 */
+    .stage, .hero, .page, .page-head, .title-group, .subnav, .wrap, .content, .col,
+    .topbar, .header, .main, .shell, .app, .layout {
+      background: transparent !important;
+      background-image: none !important;
+    }
+    /* 指标卡必须有实底，否则叠在浅色上发白看不清 */
+    .tile {
+      background: rgba(14, 22, 38, 0.88) !important;
+      border: 1px solid rgba(90, 200, 255, 0.13) !important;
+    }
+    .tile .v { color: #eaf6ff !important; }
+    .tile .k { color: #8fa8cc !important; }
+
+    /* ④ 标题区文字提亮 */
+    h1, .title, .title-group h1, .title-group .t {
+      color: #f2f8ff !important;
+      text-shadow: 0 0 24px rgba(34, 211, 238, 0.25);
+    }
+    .subtitle, .title-group .sub, .title-group p {
+      color: var(--muted) !important;
+    }
+
+    /* ⑤ 识别结果里那三行的"未收到数据"太淡，提到可读 */
+    .block-row .val { color: #7f97b8 !important; }
 </style>
 
 <div class="stage" aria-hidden="true">
