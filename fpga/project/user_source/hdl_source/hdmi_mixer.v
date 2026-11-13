@@ -74,6 +74,7 @@ module hdmi_mixer #(
     reg [11:0] S_y_2d;
 
     reg        S_osd_hit;
+    reg        S_osd_bg;
     // ★ 2026-10-12: 模式值在**显示帧首**锁存 (见下面 S_mode_r 的 always)。
     //   为的是让 OSD 文字和画面的模式切换发生在**同一帧** —— 进阶要求(1) 的
     //   "力求切换平稳"要补的就是这一点。详见 S_mode_r 那段说明。
@@ -1597,6 +1598,7 @@ module hdmi_mixer #(
         S_dyn_row = 3'd0;
         S_dyn_bits = 5'd0;
         S_dyn_on = 1'b0;
+            S_osd_bg  = 1'b0;
         S_dyn_digit_idx = 4'd0;
         S_dyn_digit_x = 12'd0;
         S_dyn_seg = 7'd0;
@@ -1652,6 +1654,7 @@ module hdmi_mixer #(
             if(I_logo_en && (!S_osd_hit) &&
                (S_x_2d >= DYN_OSD_X) && (S_x_2d < (DYN_OSD_X + DYN_OSD_W)) &&
                (S_y_2d >= DYN_OSD_Y) && (S_y_2d < (DYN_OSD_Y + DYN_OSD_H))) begin
+            S_osd_bg  = 1'b1;   // 文字矩形内：给底衬
                 S_dyn_x = S_x_2d - DYN_OSD_X;
                 S_dyn_y = S_y_2d - DYN_OSD_Y;
 
@@ -1970,6 +1973,13 @@ module hdmi_mixer #(
             else begin
                 if(S_osd_hit)
                     O_hdmi_data <= S_osd_color;
+                else if(S_osd_bg)
+                    // 2026-11-13: OSD 文字底衬。黄字打在白墙上完全看不清（答辩要读的
+                    // MODE / LAT / CNT 全糊），所以在文字矩形内把视频压暗一半，
+                    // 形成一条深色底衬。纯移位，0 额外存储、0 额外流水。
+                    O_hdmi_data <= {1'b0, S_video_data_2d[23:17],
+                                    1'b0, S_video_data_2d[15: 9],
+                                    1'b0, S_video_data_2d[ 7: 1]};
                 else
                     O_hdmi_data <= S_video_data_2d;
             end
