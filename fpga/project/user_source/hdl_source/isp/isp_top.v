@@ -1731,7 +1731,7 @@ module color_box_ccl_96 #(
     // 单条比较器，约 15 LUT。全画面是 921600 像素，取值有很宽的余量。
     parameter AREA_MAX   = 250000, // 2026-11-13: 80000 -> 250000（理由见 color_detect_96 那边）
     // 报出去的框向外扩几像素，补偿判据偏高导致框只套住目标核心的问题
-    parameter BOX_PAD    = 6,
+    parameter BOX_PAD    = 0,      // 2026-11-13: 6 -> 0。颜色门限已放宽到 37.5%，框天然贴近真实目标，不再需要外扩
     parameter MIN_RUN    = 2,     // 每个 4 像素组至少这么多命中才算活跃
     parameter EDGE_MASK_X = 80,
     parameter EDGE_MASK_Y = 45,
