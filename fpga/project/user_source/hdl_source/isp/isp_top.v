@@ -92,6 +92,9 @@ data128_96 u_data128_96 (
 );
 
 // AE observes pre-AWB, pre-gamma pixels without modifying the video stream.
+// 2026-11-13: AE 帧均值（第一步，只测量，不闭环）
+wire [15:0] S_ae_frame_sum;
+
 aec_stats_96 u_aec_stats (
     .I_clk          (axi4s_video_aclk),
     .I_rst_n        (I_rst_n),
@@ -100,7 +103,8 @@ aec_stats_96 u_aec_stats (
     .I_tdata        (m_aixs_tdata_96),
     .O_too_bright   (O_ae_too_bright),
     .O_too_dark     (O_ae_too_dark),
-    .O_frame_toggle (O_ae_frame_toggle)
+    .O_frame_toggle (O_ae_frame_toggle),
+    .O_frame_sum    (S_ae_frame_sum)
 );
 
 // ---- 2026-10-12: AWB 换成 One 工程那版改良实现 (awb.v 已整体替换) ----------
@@ -208,6 +212,7 @@ gamma_96 #(
 //   det_boxes2/3/4  = 每色的 rank2~4 —— 只给 ISP 域的 box_overlay_96 画框
 // 拆成 4 根 192 位总线而不是一根 768 位: rank1 那根正好就是原来那根总线,
 // 所以送 HDMI 的跨时钟域部分**一行都不用改** (标签只贴最大的框)。
+wire [191:0] det_boxes_raw;
 wire [191:0] det_boxes, det_boxes2, det_boxes3, det_boxes4;
 wire         box_tuser, box_tvalid;
 wire [ 95:0] box_tdata;
@@ -224,7 +229,9 @@ color_detect_96 #(
                                  //   不再是包围盒的硬门 —— 零散点会变成像素数极少的
                                  //   轨迹, 帧末被 AREA_TH 直接淘汰。所以它可以从 4
                                  //   退回 3/2, 不会再把远处的绿目标整帧门掉。
-    .MIN_BRIGHT        (70  ),
+    .MIN_BRIGHT        (45  ),   // 2026-11-13: 75 -> 45。75 是绝对亮度门，夜里暗一点的红物体直接被挡在外面。
+                                 // 红/蓝的相对饱和度门限（50% / 25%）本身就能挡住大部分非目标色，
+                                 // 亮度门不需要卡这么高。值压低后由相对门限兜噪声。
     .AREA_TH           (300 ),   // **单个连通域**小于 300 像素不报
     .MIN_RUN           (3   ),   // 2026-10-19: 2->3, horizontal erosion for the bbox only
     .EDGE_MASK_X       (80  ),
@@ -254,10 +261,23 @@ color_detect_96 #(
     .I_tuser     (gam_tuser),
     .I_tvalid    (gam_tvalid),
     .I_tdata     (gam_tdata),
-    .O_det_boxes (det_boxes ),
+    .O_det_boxes (det_boxes_raw ),
     .O_det_boxes2(det_boxes2),
     .O_det_boxes3(det_boxes3),
     .O_det_boxes4(det_boxes4)
+);
+
+// 帧间滞回：只作用于送显示/送下位的 rank1，不动检测内核。
+// 连续 2 帧命中才点亮；丢失后保持 8 帧（约 133 ms），期间框冻结在最后位置。
+color_box_hold_96 #(
+    .ON_N  (2'd2),
+    .HOLD_N(4'd12)   // 2026-11-13: 8 -> 12。红皮书处在 43.75% 门限临界，检测会一两帧掉，加长保持让框不跟着灭
+) u_boxhold (
+    .I_clk  (axi4s_video_aclk),
+    .I_rst_n(I_rst_n),
+    .I_tuser(gam_tuser),
+    .I_boxes(det_boxes_raw),
+    .O_boxes(det_boxes    )
 );
 
 // ---- 显示模式 (2026-10-10) -------------------------------------------------
@@ -281,6 +301,7 @@ reg  [95:0] raw_tdata_d;
 reg         raw_tuser_d, raw_tvalid_d, raw_tlast_d;
 wire        edge_tlast, edge_tuser, edge_tvalid, edge_tready;
 wire [95:0] edge_tdata;
+wire [3:0]  edge_strong;
 // sel_* 必须是 reg —— 它们在下面的 always 里被赋值 (wire 不能过程赋值, 会报 HDL-8007)
 reg         sel_tuser, sel_tvalid, sel_tlast;
 reg  [95:0] sel_tdata;
@@ -293,7 +314,7 @@ always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
         raw_tvalid_d <= 1'b0;
         raw_tlast_d  <= 1'b0;
     end else begin
-        // 原图分支延一拍, 与 edge_detect 的一拍延迟对齐
+        // 原图分支延一拍, 与 edge_detect_96 的一拍延迟对齐
         raw_tdata_d  <= demo_tdata;
         raw_tuser_d  <= gam_tuser;
         raw_tvalid_d <= gam_tvalid;
@@ -311,7 +332,11 @@ edge_detect_96 #(
     .I_clk   (axi4s_video_aclk),
     .I_rst_n (I_rst_n),
     // 边缘图使用门限 80，卡通描边使用门限 60。
-    .I_edge_th((S_mode == 3'd2) ? 11'd60 : 11'd80),
+    // 门限 60（2026-11-12 上板照片复核后从 45 提上来，两个模式共用）。
+    // 45 时墙面/木纹这类天然纹理的梯度全被放行，画面满是密集噪点；
+    // 家具轮廓的梯度明显更强，60 能把纹理挡在外面。
+    // 现场若还嫌噪点多 → 提到 70；嫌轮廓丢 → 降到 55。只改这一个数。
+    .I_edge_th(11'd68),   // 2026-11-13: 60 -> 68，压掉残留的轻微噪点（弱门限自动跟到 42）
     .I_tlast (gam_tlast ),
     .I_tuser (gam_tuser ),
     .I_tdata (gam_tdata ),
@@ -320,13 +345,14 @@ edge_detect_96 #(
     .O_tlast (edge_tlast ),
     .O_tuser (edge_tuser ),
     .O_tdata (edge_tdata ),
+    .O_strong(edge_strong),
     .O_tvalid(edge_tvalid),
     .O_tready(edge_tready)
 );
 
 // ---- 卡通化: 区域填充 + 边缘描边 (2026-10-10) -----------------------------
 // 对应**基础扩展要求(1)「边缘提取与区域填充」**。纯组合, 0 寄存器 / 0 BRAM / 0 DSP。
-// I_color 用原图(raw_tdata_d), I_edge 用 edge_detect_96 的输出 —— 两者本来就同拍
+// I_color 用原图(raw_tdata_d), I_strong 用 edge_detect_96 的强边输出 —— 两者本来就同拍
 // (都在 gamma+1), 所以不需要任何额外对齐逻辑。
 wire [95:0] cartoon_tdata;
 cartoon_effect_96 #(
@@ -335,7 +361,7 @@ cartoon_effect_96 #(
     .I_clk    (axi4s_video_aclk),
     .I_rst_n  (I_rst_n),
     .I_color  (raw_tdata_d),    // 原图 (已延一拍)
-    .I_edge   (edge_tdata ),    // 边缘图 (同拍)
+    .I_strong (edge_strong),    // 强边标志 (同拍)
     .O_cartoon(cartoon_tdata)
 );
 
@@ -479,15 +505,36 @@ module gamma_96 #(
         input [7:0] vin;
         reg   [8:0] v;
         reg   [9:0] t;
+        reg   [9:0] x;
         begin
             // 先减黑电平 —— 不减掉黑阶, 曲线会把黑阶一起抬起来, 整幅发灰
             v = (vin <= BLACK_LEVEL) ? 9'd0 : ({1'b0, vin} - BLACK_LEVEL);
 
-            if      (v < 9'd64)  t = {1'b0,v} + (v >> 1);                 // x1.50
-            else if (v < 9'd128) t = 10'd96  + (v - 9'd64);               // x1.00
-            else if (v < 9'd192) t = 10'd160 + (((v - 9'd128) * 3) >> 2); // x0.75
-            else                 t = 10'd208 + (((v - 9'd192) * 3) >> 2); // x0.75
-
+            // 2026-11-12: 把 `(x * 3) >> 2` 改成移位加法 `((x<<1) + x) >> 2`。
+            // 语义完全等价（x 最大 63，3x 最大 189，10 位装得下），但 TD 会把
+            // 常数乘法 `*3` 映射成 DSP —— 12 个输出通道各一个，一共吃掉
+            // **24 个 DSP**（构建报告 #dsp 里那 24 个）。移位加法是 0 DSP。
+            // 曲线形状一个字没动，所以三色判据不需要重新标定。
+            // 2026-11-13: 整体提亮中间调。原曲线 128..192 和 >192 都是 x0.75，
+            // 上半段全被压暗，上板观感发闷（用户反馈天暗）。新曲线：
+            //   v<64   x1.75  (阴影更亮)       64 -> 112
+            //   64..128 x1.25 (中间调抬起来)   128 -> 192
+            //   128..192 x0.75 (保持对比)      192 -> 240
+            //   >192    x0.25 (压缩高光)       255 -> 255
+            // 全部移位加法，0 DSP（和之前的 *3 改移位同一原则）。
+            if      (v < 9'd64)  t = {1'b0,v} + (v >> 1) + (v >> 2);   // x1.75
+            else if (v < 9'd128) begin
+                x = {1'b0, (v - 9'd64)};
+                t = 10'd112 + x + (x >> 2);                             // x1.25
+            end
+            else if (v < 9'd192) begin
+                x = {1'b0, (v - 9'd128)};
+                t = 10'd192 + (((x << 1) + x) >> 2);                     // x0.75
+            end
+            else begin
+                x = {1'b0, (v - 9'd192)};
+                t = 10'd240 + (x >> 2);                                 // x0.25
+            end
             gam8 = (t > 10'd255) ? 8'hff : t[7:0];
         end
     endfunction
@@ -497,6 +544,36 @@ module gamma_96 #(
         gam8(I_tdata[71:64]), gam8(I_tdata[63:56]), gam8(I_tdata[55:48]),
         gam8(I_tdata[47:40]), gam8(I_tdata[39:32]), gam8(I_tdata[31:24]),
         gam8(I_tdata[23:16]), gam8(I_tdata[15:8]),  gam8(I_tdata[7:0])
+    };
+
+    // 2026-11-13 方案 A：饱和度增强。链路里原本完全没有饱和度这一级，
+    // 而 AWB 是灰世界（会把画面平均拉成中性），叠加起来就是颜色发灰发淡。
+    //     mid = (r + g + b) >> 2          （用 >>2 代替 /3，省一个除法）
+    //     out = c + ((c - mid) >> 2)      （每个通道离灰值再远 25%）
+    // 纯移位加法，0 乘法器；放在 gamma 之后、算法分支之前，显示和识别共用。
+    function [7:0] sat8;
+        input [7:0] c;
+        input [9:0] mid;
+        reg   [9:0] t;
+        begin
+            if ({2'b0, c} >= mid)
+                t = {2'b0, c} + (({2'b0, c} - mid) >> 2);
+            else
+                t = {2'b0, c} - ((mid - {2'b0, c}) >> 2);
+            sat8 = (t > 10'd255) ? 8'hff : t[7:0];
+        end
+    endfunction
+
+    wire [9:0] S_m0 = ({2'b0,S_gam[95:88]} + {2'b0,S_gam[87:80]} + {2'b0,S_gam[79:72]}) >> 2;
+    wire [9:0] S_m1 = ({2'b0,S_gam[71:64]} + {2'b0,S_gam[63:56]} + {2'b0,S_gam[55:48]}) >> 2;
+    wire [9:0] S_m2 = ({2'b0,S_gam[47:40]} + {2'b0,S_gam[39:32]} + {2'b0,S_gam[31:24]}) >> 2;
+    wire [9:0] S_m3 = ({2'b0,S_gam[23:16]} + {2'b0,S_gam[15: 8]} + {2'b0,S_gam[ 7: 0]}) >> 2;
+
+    wire [95:0] S_sat = {
+        sat8(S_gam[95:88], S_m0), sat8(S_gam[87:80], S_m0), sat8(S_gam[79:72], S_m0),
+        sat8(S_gam[71:64], S_m1), sat8(S_gam[63:56], S_m1), sat8(S_gam[55:48], S_m1),
+        sat8(S_gam[47:40], S_m2), sat8(S_gam[39:32], S_m2), sat8(S_gam[31:24], S_m2),
+        sat8(S_gam[23:16], S_m3), sat8(S_gam[15: 8], S_m3), sat8(S_gam[ 7: 0], S_m3)
     };
 
     always @(posedge I_clk or negedge I_rst_n) begin
@@ -509,7 +586,7 @@ module gamma_96 #(
             O_tlast  <= I_tlast;
             O_tuser  <= I_tuser;
             O_tvalid <= I_tvalid;
-            O_tdata  <= I_bypass ? I_tdata : S_gam;
+            O_tdata  <= I_bypass ? I_tdata : S_sat;
         end
     end
 
@@ -525,7 +602,11 @@ module aec_stats_96 (
     input      [95:0] I_tdata,
     output reg        O_too_bright,
     output reg        O_too_dark,
-    output reg        O_frame_toggle
+    output reg        O_frame_toggle,
+    // 2026-11-13: 整帧绿通道累加（约 900 个采样，每个取 green[7:2]）。
+    // 均值 = O_frame_sum / 900 * 4。给 FPGA 侧 AE 闭环用，零额外成本——
+    // 这个累加在模块里本来就有，只是之前没往外送。
+    output reg [15:0] O_frame_sum
 );
 
     localparam [9:0]  CLIP_ENTER = 10'd29;    // > 900/32
@@ -548,11 +629,13 @@ module aec_stats_96 (
             S_clip        <= 10'd0;
             S_sum_g6      <= 16'd0;
             S_frame_ready <= 1'b0;
+            O_frame_sum   <= 16'd0;
         end else if (I_tuser) begin
             S_phase       <= 8'd0;
             S_clip        <= 10'd0;
             S_sum_g6      <= 16'd0;
             S_frame_ready <= 1'b1;
+            O_frame_sum   <= S_sum_g6;   // 帧首：交出上一整帧的绿通道累加
         end else if (I_tvalid) begin
             S_phase <= S_phase + 8'd1;
             if (S_take) begin
@@ -646,6 +729,7 @@ module color_detect_96 #(
     parameter GREEN_MIN_RUN = 2,
     parameter MIN_BRIGHT    = 80,   // 亮度下限, 滤除暗噪声
     parameter AREA_TH       = 300,  // **单个连通域**面积(像素数)小于该值不报
+    parameter AREA_MAX      = 250000,// 2026-11-13: 80000 -> 250000。80000 和"凑近的实体色块"尺寸重叠：木门十几万像素，但拿近的红块也能到十万以上，实物全被拒、只剩手机上离得远的小色块能过。放宽到 250000（全画面 921600 的 27%），只拒绝几乎占满画面的整片区域。
     parameter MIN_RUN       = 2,    // 每个 4 像素组内至少这么多像素命中才算"活跃"
     // ---- 边缘屏蔽 ----------------------------------------------------------
     // 四角有镜头色阴影(偏红), 会触发红色误检。真正的修法是 LSC(分区增益),
@@ -700,46 +784,87 @@ module color_detect_96 #(
     // Skin sits at r-g ~= 25% of r, i.e. exactly on the old threshold, so
     // hands were being boxed as red. 31.25% clears skin and still catches
     // saturated red objects. Shift-add only, no DSP.
-    function [7:0] f_rmar;
-        input [7:0] r;
-        begin
-            f_rmar = ({3'b0, r} + {3'b0, r, 2'b0}) >> 4;    // (r + 4r) >> 4
-        end
-    endfunction
+    //
+    // 2026-11-12 第三次调整：62.5% -> 50%。
+    // 62.5% 把**真目标也挡住了**：一个典型红块 (200,80,70) 的 (r-g)/r = 60%，
+    // 达不到 62.5%，上板现象就是"红色识别不到了"。
+    // 棕色木门改由另外两道约束兜：AREA_MAX（十几万像素 vs 一万量级）
+    // 和 bbox 形状判据。饱和度回退到 50%，真目标有余量。
+    // ========================================================================
+    // 2026-11-13 方案 ②：判色改成**归一化色度**，不再用 (r-g)/r 这种相对饱和度。
+    //
+    // 旧判据 (r-g)/r >= 31.25% 有两个毛病：
+    //   1) 依赖绝对亮度 —— 改 gamma / AWB / 曝光，等效门限就变一次，要重新标定
+    //      （这几轮一直在为此来回调：43.75% -> 37.5% -> 31.25%）；
+    //   2) 除数只有 r，暗像素时 r 的分辨率不够，量化噪声被放大。
+    //
+    // 新判据用色度占比 r/(r+g+b)：
+    //   纯红 = 1.0，白 = 1/3，纯蓝 = 1.0 —— 三个颜色量纲一致。
+    //   对整体亮度缩放完全免疫（全通道乘 k，比值不变）。
+    //
+    // 关键：不用除法器。取门限 T = 1/3：
+    //     r/(r+g+b) >= 1/3  <=>  3r >= r+g+b  <=>  2r >= g+b
+    // 就是一个移位 + 一个加法 + 一个比较。
+    //
+    // 调档：把下面三处 {2'b0, x, 1'b0}（=2x）改成
+    //    {3'b0, x}     -> 1x，最严（相当于 T=1/2，红色要占一半光）
+    //    {2'b0, x, 1'b0} -> 2x，当前（T=1/3，约 33%）
+    //    {1'b0, x, 2'b00} -> 4x，更松（T=1/5，20%）
+    // ========================================================================
+    // ========================================================================
+    // 2026-11-13 ②：判色改成 YCbCr 色度判据。
+    //
+    // Cr = 0.500R - 0.4187G - 0.0813B + 128    (红度)
+    // Cb = -0.1687R - 0.3313G + 0.500B + 128   (蓝度)
+    //
+    // 这两式**只含色度**，Y 被消掉了 —— 所以判据对亮度、曝光、gamma、AE
+    // 完全免疫。这是比上一版 2r>=g+b 更标准的写法。
+    //
+    // 整数化（放大 256 倍，去掉 128 偏置只留相对量）：
+    //   cr_raw = 128R - 107G -  21B     (= (Cr-128)*256)
+    //   cb_raw = -43R -  85G + 128B     (= (Cb-128)*256)
+    // 判据：
+    //   红: cr_raw >= CR_T        绿: 两个都不满足且 G 最大
+    //   蓝: cb_raw >= CB_T
+    //
+    // 门限换算：Cr>=150 等价于 cr_raw>=5632；这里 5500 略松一点。
+    // 调档：CR_T 每加 256 相当于 Cr 门限加 1。
+    // ========================================================================
+    // 全非负比较，绕开有符号/无符号混用的坑：
+    //   cr_raw = 128R - 107G - 21B >= CR_T
+    //   <==>  128R >= 107G + 21B + CR_T      (两边都是非负)
+    // 2026-11-13: YCbCr 那版上板后"只有蓝色能识别，红绿全没有"，回退到这里。
+    //
+    // 判据：主导通道比另外两个都高出自身值的 31.25%（5/16）。
+    //   红: r 最大 且 (r-g) >= 5r/16 且 (r-b) >= 5r/16
+    //   绿: g 最大 且 (g-r) >= 5g/16 且 (g-b) >= 5g/16
+    //   蓝: b 最大 且 (b-r) >= 5b/16 且 (b-g) >= 5b/16
+    // 5x/16 = (x>>2) + (x>>4)，纯移位加法，0 乘法 0 除法。
     function is_red;
         input [7:0] r, g, b;
-        reg [7:0] m;
+        reg   [7:0] m;
         begin
-            m = f_rmar(r);
+            m = (r >> 2) + (r >> 4);
             is_red = (r >= MIN_BRIGHT) && (r >= g) && (r >= b) &&
                      ((r - g) >= m) && ((r - b) >= m);
         end
     endfunction
     function is_green;
         input [7:0] r, g, b;
-        // 绿的余量 = 3g/16 = 18.75%
-        // 为什么是这个中间档 (2026-10-10 拿两档诊断染色在板子上实测定的):
-        //   12.5% (g>>3) -> 画面中心的固定绿偏(约 5~10%)也能过判据 -> 假检,
-        //                   天花板/灯光都被判成绿, 绿框被这些散点撑大
-        //   25%   (g>>2) -> 画面中心被正确挡住 ✓, 但真绿物体只有核心过、边缘不过
-        //                   (诊断染色上呈"橙黄混杂")
-        //   18.75%        -> 实测: 真绿物体以亮黄为主(核心和边缘都过), 中心仍被挡住 ✓
-        // 只用移位加法: 3g = (g<<1) + g, 再 >>4。不占乘法器。
-        // (原来这里是参数 GREEN_MARGIN_SHIFT, 写法是 g>>N, 只能取 2 或 3 两档,
-        //  取不到中间档 —— 而 12.5% 和 25% 两边都不对。)
-        reg [9:0] gm;
+        reg   [7:0] m;
         begin
-            gm = ({2'b0, g} + {1'b0, g, 1'b0}) >> 4;
+            m = (g >> 2) + (g >> 4);
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
-                       ((g - r) >= gm) && ((g - b) >= gm);
+                       ((g - r) >= m) && ((g - b) >= m);
         end
     endfunction
     function is_blue;
         input [7:0] r, g, b;
+        reg   [7:0] m;
         begin
+            m = (b >> 2) + (b >> 4);
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
-                      ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
-                      ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
+                      ((b - r) >= m) && ((b - g) >= m);
         end
     endfunction
 
@@ -749,15 +874,52 @@ module color_detect_96 #(
     wire [7:0] r2 = I_tdata[47:40], g2 = I_tdata[39:32], b2 = I_tdata[31:24];
     wire [7:0] r3 = I_tdata[23:16], g3 = I_tdata[15:8],  b3 = I_tdata[7:0];
 
-    wire hr0 = is_red  (r0,g0,b0), hg0 = is_green(r0,g0,b0), hb0 = is_blue(r0,g0,b0);
-    wire hr1 = is_red  (r1,g1,b1), hg1 = is_green(r1,g1,b1), hb1 = is_blue(r1,g1,b1);
-    wire hr2 = is_red  (r2,g2,b2), hg2 = is_green(r2,g2,b2), hb2 = is_blue(r2,g2,b2);
-    wire hr3 = is_red  (r3,g3,b3), hg3 = is_green(r3,g3,b3), hb3 = is_blue(r3,g3,b3);
+    // 2026-11-13: 改成"组内 4 像素先平均、再判一次色"（水平 4:1 下采样）。
+    //
+    // 原来 4 个像素各判一次（3 色 x 4 像素 = 12 份判色逻辑），单像素噪声可以
+    // 单独触发判据 —— 这是色块不稳的一大来源。改成先做 4:1 平均再判：
+    //   · 水平噪声被平滑 4 倍；
+    //   · 判色逻辑从 12 份降到 3 份，**省面积**（不是花面积）；
+    //   · 坐标体系完全不用改 —— CCL 本来就是一拍处理一个 4 像素组
+    //     (base_x = x_grp*4)，所以 bbox 精度本来就在 4 像素粒度上。
+    // 代价：组内不再有亚像素边界（原来 hit 的 4 位能给出 4px 内的左右边界）。
+    wire [9:0] rav = {2'b0,r0} + {2'b0,r1} + {2'b0,r2} + {2'b0,r3};
+    wire [9:0] gav = {2'b0,g0} + {2'b0,g1} + {2'b0,g2} + {2'b0,g3};
+    wire [9:0] bav = {2'b0,b0} + {2'b0,b1} + {2'b0,b2} + {2'b0,b3};
+    wire [7:0] sav_r = rav[9:2];   // 4 像素平均
+    wire [7:0] sav_g = gav[9:2];
+    wire [7:0] sav_b = bav[9:2];
+
+    wire hr = is_red  (sav_r,sav_g,sav_b);
+    wire hg = is_green(sav_r,sav_g,sav_b);
+    wire hb = is_blue (sav_r,sav_g,sav_b);
 
     // I_hit[3] = 组内第 0 个像素(最左), I_hit[0] = 第 3 个像素
-    wire [3:0] hit_r = {hr0,hr1,hr2,hr3};
-    wire [3:0] hit_g = {hg0,hg1,hg2,hg3};
-    wire [3:0] hit_b = {hb0,hb1,hb2,hb3};
+    // 现在整组同判，4 位一起置位 —— CCL 的 MIN_RUN=3 因此等价于"组被判中"。
+    // 2026-11-13: 判色之后、进 CCL 之前加一级**水平 3 点中值滤波**。
+    // 完整 3x3 腐蚀/膨胀要 2 行延时 = 320 组 x 3 色 x 2 行 = 1920 寄存器，
+    // 当前 slice 94.2% 塞不下；水平 3 点只要 6 个寄存器，能去掉"孤立的单组
+    // 命中"，且不缩小目标（中值不改变长度 >= 2 的游程）。
+    reg hr1, hr2, hg1, hg2, hb1, hb2;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            hr1 <= 1'b0; hr2 <= 1'b0;
+            hg1 <= 1'b0; hg2 <= 1'b0;
+            hb1 <= 1'b0; hb2 <= 1'b0;
+        end else if (I_tvalid) begin
+            hr1 <= hr;  hr2 <= hr1;
+            hg1 <= hg;  hg2 <= hg1;
+            hb1 <= hb;  hb2 <= hb1;
+        end
+    end
+
+    // 3 点中值 = 三个里至少两个为真
+    wire hr_m = (hr & hr1) | (hr & hr2) | (hr1 & hr2);
+    wire hg_m = (hg & hg1) | (hg & hg2) | (hg1 & hg2);
+    wire hb_m = (hb & hb1) | (hb & hb2) | (hb1 & hb2);
+    wire [3:0] hit_r = {4{hr_m}};
+    wire [3:0] hit_g = {4{hg_m}};
+    wire [3:0] hit_b = {4{hb_m}};
 
     // ---- 判色 -> 跟踪 之间插一级流水 (2026-10-09) --------------------------
     // 原来判色函数 (is_red/is_green/is_blue, 每像素 5 个条件 x 4 像素 x 3 色) 和
@@ -800,7 +962,7 @@ module color_detect_96 #(
 
     color_box_ccl_96 #(
         .IMG_WIDTH (IMG_WIDTH ), .IMG_HEIGHT(IMG_HEIGHT),
-        .AREA_TH   (AREA_TH   ), .MIN_RUN   (MIN_RUN   ),
+        .AREA_TH   (AREA_TH   ), .AREA_MAX(AREA_MAX), .MIN_RUN   (MIN_RUN   ),
         .EDGE_MASK_X(EDGE_MASK_X), .EDGE_MASK_Y(EDGE_MASK_Y),
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_r (
@@ -810,7 +972,7 @@ module color_detect_96 #(
 
     color_box_ccl_96 #(
         .IMG_WIDTH (IMG_WIDTH ), .IMG_HEIGHT(IMG_HEIGHT),
-        .AREA_TH   (AREA_TH   ), .MIN_RUN   (GREEN_MIN_RUN),
+        .AREA_TH   (AREA_TH   ), .AREA_MAX(AREA_MAX), .MIN_RUN   (GREEN_MIN_RUN),
         .EDGE_MASK_X(EDGE_MASK_X), .EDGE_MASK_Y(EDGE_MASK_Y),
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_g (
@@ -820,7 +982,7 @@ module color_detect_96 #(
 
     color_box_ccl_96 #(
         .IMG_WIDTH (IMG_WIDTH ), .IMG_HEIGHT(IMG_HEIGHT),
-        .AREA_TH   (AREA_TH   ), .MIN_RUN   (2       ),
+        .AREA_TH   (AREA_TH   ), .AREA_MAX(AREA_MAX), .MIN_RUN   (2       ),
         .EDGE_MASK_X(EDGE_MASK_X), .EDGE_MASK_Y(EDGE_MASK_Y),
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_b (
@@ -1366,7 +1528,9 @@ module classify_overlay_96 #(
     endfunction
     function is_blue;
         input [7:0] r, g, b;
+        reg [7:0] b_m;
         begin
+            b_m = (b >> 2) + (b >> 4);   // 2026-11-13: 37.5% -> 31.25%，补偿 gamma 提亮
             is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
                       ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
                       ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
@@ -1624,6 +1788,13 @@ module color_box_ccl_96 #(
     parameter IMG_WIDTH  = 1280,
     parameter IMG_HEIGHT = 720,
     parameter AREA_TH    = 300,   // **单个连通域**小于这么多像素就不报
+    // 2026-11-12: 面积上限。上板照片里红框套在整扇棕色木门上 —— 那是十几万像素的
+    // 连通域，而真色块只在 1 万量级。这是**语义约束**（目标是"一个色块"，
+    // 不是"占满画面的区域"），比继续猜饱和度门限可靠得多。
+    // 单条比较器，约 15 LUT。全画面是 921600 像素，取值有很宽的余量。
+    parameter AREA_MAX   = 250000, // 2026-11-13: 80000 -> 250000（理由见 color_detect_96 那边）
+    // 报出去的框向外扩几像素，补偿判据偏高导致框只套住目标核心的问题
+    parameter BOX_PAD    = 0,      // 2026-11-13: 6 -> 0。颜色门限已放宽到 37.5%，框天然贴近真实目标，不再需要外扩
     parameter MIN_RUN    = 2,     // 每个 4 像素组至少这么多命中才算活跃
     parameter EDGE_MASK_X = 80,
     parameter EDGE_MASK_Y = 45,
@@ -1698,10 +1869,18 @@ module color_box_ccl_96 #(
     wire [10:0] base_x  = {x_grp, 2'b00};
     wire [2:0]  hit_cnt = I_hit[0] + I_hit[1] + I_hit[2] + I_hit[3];
 
-    wire in_field = (base_x >= EDGE_MASK_X) &&
-                    (base_x <  (IMG_WIDTH  - EDGE_MASK_X)) &&
-                    (y_pos  >= EDGE_MASK_Y) &&
-                    (y_pos  <  (IMG_HEIGHT - EDGE_MASK_Y));
+    // 边缘屏蔽 —— 只屏蔽四角，不是整圈（2026-11-12 从 color_box_96 回填）
+    //
+    // CCL 重写时这里退回了"整圈屏蔽"：只要落在横向或纵向边距里就整片不采信，
+    // 屏蔽掉 1 - (1120*630)/(1280*720) = 23.4% 的画面。
+    // 而它要治的只是四角镜头色阴影，实际只涉及 4*80*45/(1280*720) = 1.56%，
+    // 代价被放大了 15 倍；而且 in_field 同时门控组命中，完全落在边距环里的目标
+    // 就是**永久性盲区**。
+    // 改成只有同时在横向边距和纵向边距里才算四角，四条边的中点重新参与检测；
+    // 实测（color_box_96 时期）贴边色块不再丢框。零额外 LUT。
+    wire in_h_margin = (base_x <  EDGE_MASK_X) || (base_x >= (IMG_WIDTH  - EDGE_MASK_X));
+    wire in_v_margin = (y_pos  <  EDGE_MASK_Y) || (y_pos  >= (IMG_HEIGHT - EDGE_MASK_Y));
+    wire in_field    = !(in_h_margin && in_v_margin);
 
     wire grp_act = I_tvalid && (hit_cnt >= MIN_RUN) && in_field;
 
@@ -1809,26 +1988,60 @@ module color_box_ccl_96 #(
     wire [10:0] W4_cx = (W4_x0 + W4_x1) >> 1;
     wire [ 9:0] W4_cy = (W4_y0 + W4_y1) >> 1;
 
+    // ---- 帧末轨迹合并（2026-11-12）----------------------------------------
+    // 高光带把物体上下撕开后，两半变成两条独立轨迹，各自面积减半；
+    // AREA_TH=300 一卡，两条都不报框 —— 表现就是"物体突然消失"。
+    // CCL 的匹配每拍只认一条轨迹（低索引优先），所以永不合并。
+    //
+    // 这里在**帧末**把 rank1 与 rank2 在「纵向靠近 + 横向重叠」时合并：
+    // 面积相加、bbox 取并集、valid 用合并后的面积去比 AREA_TH。
+    // 纯组合、只在 tuser 那一拍求值，完全不碰像素通路，也不加存储。
+    wire [10:0] w12_gap   = (W2_y0 > W1_y1) ? ({1'b0,W2_y0} - {1'b0,W1_y1}) :
+                            (W1_y0 > W2_y1) ? ({1'b0,W1_y0} - {1'b0,W2_y1}) : 11'd0;
+    wire        w12_ovl   = !(W1_x1 < W2_x0) && !(W2_x1 < W1_x0);
+    wire        w12_merge = W1_on && W2_on &&
+                            (W1_cnt >= 18'd32) && (W2_cnt >= 18'd32) &&
+                            w12_ovl && (w12_gap <= 11'd32);
+    wire [17:0] w12_cnt   = W1_cnt + W2_cnt;
+    wire [10:0] w12_x0    = (W1_x0 < W2_x0) ? W1_x0 : W2_x0;
+    wire [10:0] w12_x1    = (W1_x1 > W2_x1) ? W1_x1 : W2_x1;
+    wire [ 9:0] w12_y0    = (W1_y0 < W2_y0) ? W1_y0 : W2_y0;
+    wire [ 9:0] w12_y1    = (W1_y1 > W2_y1) ? W1_y1 : W2_y1;
+    wire [11:0] w12_cxs   = {1'b0,w12_x0} + {1'b0,w12_x1};
+    wire [10:0] w12_cx    = w12_cxs[11:1];
+    wire [10:0] w12_cys   = {1'b0,w12_y0} + {1'b0,w12_y1};
+    wire [ 9:0] w12_cy    = w12_cys[10:1];
+
     // ---- rank1 output deadband (2026-10-19) --------------------------------
     // Background pixels of a similar colour drift in and out of the blob, so
     // the connected-component box edges still wobble a few pixels per frame.
     // Ignore changes of <= 4 px on rank1 (the only rank that is drawn); real
     // motion is larger and updates immediately.
-    localparam [4:0] DB_PX = 5'd4;
-    reg [10:0] D_x0, D_x1, D_cx;
-    reg [ 9:0] D_y0, D_y1, D_cy;
-    wire [10:0] dd_x0 = (W1_x0 > D_x0) ? (W1_x0 - D_x0) : (D_x0 - W1_x0);
-    wire [10:0] dd_x1 = (W1_x1 > D_x1) ? (W1_x1 - D_x1) : (D_x1 - W1_x1);
-    wire [ 9:0] dd_y0 = (W1_y0 > D_y0) ? (W1_y0 - D_y0) : (D_y0 - W1_y0);
-    wire [ 9:0] dd_y1 = (W1_y1 > D_y1) ? (W1_y1 - D_y1) : (D_y1 - W1_y1);
-    wire [10:0] dd_cx = (S_cx  > D_cx) ? (S_cx  - D_cx) : (D_cx - S_cx );
-    wire [ 9:0] dd_cy = (S_cy  > D_cy) ? (S_cy  - D_cy) : (D_cy - S_cy );
-    wire [10:0] O_bx0 = (dd_x0 > {6'd0, DB_PX}) ? W1_x0 : D_x0;
-    wire [10:0] O_bx1 = (dd_x1 > {6'd0, DB_PX}) ? W1_x1 : D_x1;
-    wire [ 9:0] O_by0 = (dd_y0 > DB_PX[3:0]   ) ? W1_y0 : D_y0;
-    wire [ 9:0] O_by1 = (dd_y1 > DB_PX[3:0]   ) ? W1_y1 : D_y1;
-    wire [10:0] O_bcx = (dd_cx > {6'd0, DB_PX}) ? S_cx  : D_cx;
-    wire [ 9:0] O_bcy = (dd_cy > DB_PX[3:0]   ) ? S_cy  : D_cy;
+    // ---- 2026-11-12: 从"死区"改成"限速跟随" ------------------------------
+    // 原来的做法是：变化 <= 4px 就保持旧值，**超过 4px 就直接跳到新值** ——
+    // 背景像素一进一出把 bbox 撑开 20 像素时，框会立刻跳过去，上板表现就是
+    // "框抖得厉害"。死区只压得住小幅抖动，压不住单帧异常跳变。
+    //
+    // 改成每帧最多移动 SLEW 像素：
+    //   · 目标没动 → 框不动（等价死区）
+    //   · 有微小抖动 → 每帧挪 8px 就收敛回来，不会来回跳
+    //   · 真实运动 → 平滑跟随，最快 8px/帧 ≈ 480px/s
+    localparam [10:0] SLEW   = 11'd32;
+    localparam [ 9:0] SLEW_Y = 10'd32;
+    reg [10:0] D_x0, D_x1;
+    reg [ 9:0] D_y0, D_y1;
+
+    wire [10:0] O_bx0 = (W1_x0 > (D_x0 + SLEW  )) ? (D_x0 + SLEW  ) :
+                        (W1_x0 + SLEW   < D_x0  ) ? (D_x0 - SLEW  ) : W1_x0;
+    wire [10:0] O_bx1 = (W1_x1 > (D_x1 + SLEW  )) ? (D_x1 + SLEW  ) :
+                        (W1_x1 + SLEW   < D_x1  ) ? (D_x1 - SLEW  ) : W1_x1;
+    wire [ 9:0] O_by0 = (W1_y0 > (D_y0 + SLEW_Y)) ? (D_y0 + SLEW_Y) :
+                        (W1_y0 + SLEW_Y < D_y0  ) ? (D_y0 - SLEW_Y) : W1_y0;
+    wire [ 9:0] O_by1 = (W1_y1 > (D_y1 + SLEW_Y)) ? (D_y1 + SLEW_Y) :
+                        (W1_y1 + SLEW_Y < D_y1  ) ? (D_y1 - SLEW_Y) : W1_y1;
+    // 质心直接用平滑后的框中心，和 rank2~4 的口径一致
+    wire [10:0] O_bcx = (O_bx0 + O_bx1) >> 1;
+    wire [ 9:0] O_bcy = (O_by0 + O_by1) >> 1;
 
     // 拼一个 64 位的 rank 记录, 格式与 color_box_96 完全一致
     function [63:0] mkbox;
@@ -1836,8 +2049,52 @@ module color_box_ccl_96 #(
         input [17:0] cnt;
         input [10:0] x0, x1, cx;
         input [ 9:0] y0, y1, cy;
+        reg [11:0] bw, bh;
+        reg [10:0] px0, px1;
+        reg [ 9:0] py0, py1;
+        reg [23:0] barea, bpix;
+        reg        solid_ok;
+        reg [10:0] ccx;
+        reg [ 9:0] ccy;
         begin
-            mkbox = { cy, cx, (on && (cnt >= AREA_TH)), x0, x1, y0, y1 };
+            // 2026-11-12: 加 bbox 形状合理性判据。
+            // 纯颜色判据之下，一条细长的高光带、一片纹理噪点都能积到 AREA_TH
+            // 以上并被当成目标。真色块是**近似正方形、有最小尺寸**的，
+            // 所以这里补两道纯比较器的检查（0 乘法、0 存储）：
+            //   1) 宽高都 >= 8 像素 —— 排除细碎
+            //   2) 宽高比在 1:4 ~ 4:1 之间 —— 排除细长条
+            // 注意这只收紧"报不报框"，不影响 CCL 的轨迹跟踪。
+            bw = {1'b0,x1} - {1'b0,x0} + 12'd1;
+            bh = {2'b0,y1} - {2'b0,y0} + 12'd1;
+            // 2026-11-13: 实心度判据（照 OpenMV find_blobs 的 pixels_threshold 思路）
+            //   bbox 面积 和 实际像素数 同时看，两者之比就是实心度：
+            //     真色块  紧凑      -> 70~95%
+            //     木门/墙面 内部有纹理暗部 -> 30~50%
+            //     噪点团  稀疏      -> 10~20%
+            // 这是区分"木门"和"红皮书"的正确工具 —— 两者饱和度本来就重叠，
+            // 但实心度差得远。加了它，颜色门限就可以放宽，红皮书不再临界闪烁。
+            // 代价：1 个 12x12 乘法器 = 1 DSP（现在 DSP 12/40，余量充足）。
+            barea = bw * bh;              // bbox 面积
+            bpix  = {6'b0, cnt};          // 实际像素数
+            solid_ok = ({bpix[22:0], 1'b0} >= barea);   // cnt*2 >= bw*bh  <=>  实心度 >= 50%
+            // 2026-11-13: 框向外扩 BOX_PAD 像素。门限偏高时只有目标最饱和的核心
+            // 能过，边缘像素被背景稀释后过不了，框就比物体小一圈。这里不改判据
+            // （改大了木门会回来），只把报出去的框向外补偿，超边界自动夹住。
+            px0 = (x0 > BOX_PAD)              ? (x0 - BOX_PAD)           : 11'd0;
+            px1 = (x1 < (11'd1279 - BOX_PAD)) ? (x1 + BOX_PAD)           : 11'd1279;
+            py0 = (y0 > BOX_PAD[9:0])         ? (y0 - BOX_PAD[9:0])       : 10'd0;
+            py1 = (y1 < (10'd719 - BOX_PAD[9:0])) ? (y1 + BOX_PAD[9:0])   : 10'd719;
+            // 2026-11-13: 把十字（cx/cy）夹进报出去的框里。
+            // 十字用的是限速跟随的位置（每帧最多 SLEW 像素），框用的是当帧真实
+            // bbox —— 目标快速移动或换目标时，十字会落后、掉到框外面。
+            // 这里统一夹一次，保证十字永远在框内。纯比较器，0 额外存储。
+            ccx = (cx < px0) ? px0 : ((cx > px1) ? px1 : cx);
+            ccy = (cy < py0) ? py0 : ((cy > py1) ? py1 : cy);
+            mkbox = { ccy, ccx,
+                      (on && (cnt >= AREA_TH) && (cnt <= AREA_MAX)
+                          && (bw >= 12'd8) && (bh >= 12'd8)
+                          && (bw <= (bh << 2)) && (bh <= (bw << 2)) && solid_ok),
+                      px0, px1, py0, py1 };
         end
     endfunction
 
@@ -1882,22 +2139,30 @@ module color_box_ccl_96 #(
             S_div_i <= 6'd0; S_div_2nd <= 1'b0; S_div_pend <= 1'b0;
             S_cx <= 11'd0; S_cy <= 10'd0;
             D_x0 <= 11'd0; D_x1 <= 11'd0; D_y0 <= 10'd0; D_y1 <= 10'd0;
-            D_cx <= 11'd0; D_cy <= 10'd0;
         end else begin
             // ---- 帧开始: 输出上一帧排好的 4 个 rank + 锁存本帧 -----------------
             if (I_tuser) begin
                 // (1) 输出 —— 用上一拍锁存的 W1..W4, 和上一帧算好的 rank1 真质心。
                 //     非阻塞赋值, 所以下面"锁存本帧"那一段不会影响这里读到的值。
-                O_boxes <= { mkbox(W4_on, W4_cnt, W4_x0, W4_x1, W4_cx, W4_y0, W4_y1, W4_cy),
-                             mkbox(W3_on, W3_cnt, W3_x0, W3_x1, W3_cx, W3_y0, W3_y1, W3_cy),
-                             mkbox(W2_on, W2_cnt, W2_x0, W2_x1, W2_cx, W2_y0, W2_y1, W2_cy),
-                             mkbox(W1_on, W1_cnt, O_bx0, O_bx1, O_bcx, O_by0, O_by1, O_bcy) };
+                // rank1/rank2 判定为同一物体时：rank1 输出合并框，rank2 置空，
+                // 这样不会出现"一个物体两个框"，也不会因为各自面积不足而一起消失。
+                O_boxes <= {
+                    mkbox(W4_on, W4_cnt, W4_x0, W4_x1, W4_cx, W4_y0, W4_y1, W4_cy),
+                    mkbox(W3_on, W3_cnt, W3_x0, W3_x1, W3_cx, W3_y0, W3_y1, W3_cy),
+                    w12_merge ? 64'd0
+                              : mkbox(W2_on, W2_cnt, W2_x0, W2_x1, W2_cx, W2_y0, W2_y1, W2_cy),
+                    w12_merge ? mkbox(1'b1, w12_cnt, w12_x0, w12_x1, w12_cx, w12_y0, w12_y1, w12_cy)
+                              // 2026-11-13: rank1 的十字改用**真质心** S_cx/S_cy。
+    // 质心在这个模块里早就算好了（T_sx/T_sy 累加 + 帧末移位减法除法, L2160/L2166），
+    // 但这里原来用的是 bbox 几何中心 O_bcx/O_bcy —— 色块呈 L 形、或框内混了背景时，
+    // 几何中心会落在没有颜色的地方，十字看着就在框外。
+    // S_cx/S_cy 比 bbox 晚一帧生效（除法在 tuser 之后才跑完），做视觉标记够用。
+    : mkbox(W1_on, W1_cnt, O_bx0, O_bx1, S_cx, O_by0, O_by1, S_cy) };
 
                 // (2) 锁存本帧排好序的 4 个 rank —— 此刻轨迹表里还是刚跑完那一帧的结果
                 W1_on  <= SRT1[4];  W1_cnt <= SRT1[22:5];
                 if (W1_on && (W1_cnt >= AREA_TH)) begin
                     D_x0 <= O_bx0; D_x1 <= O_bx1; D_y0 <= O_by0; D_y1 <= O_by1;
-                    D_cx <= O_bcx; D_cy <= O_bcy;
                 end
                 W1_x0  <= T_x0[SRT1[3:0]];  W1_x1 <= T_x1[SRT1[3:0]];
                 W1_y0  <= T_y0[SRT1[3:0]];  W1_y1 <= T_y1[SRT1[3:0]];
@@ -2003,21 +2268,109 @@ module color_box_ccl_96 #(
 endmodule
 
 // ============================================================================
-// edge_detect_96 —— Sobel 边缘检测 (2026-10-10 从 One 工程搬来)
+// color_box_hold_96 —— 色块结果的帧间滞回（2026-11-12）
+//
+// 为什么需要它
+// ------------
+// color_box_ccl_96 每帧独立判定 valid = on && (cnt >= AREA_TH)。面积在门限
+// 附近抖动时，框会逐帧闪烁；某帧偶尔丢检时，框直接消失。上板表现就是
+// "特别不稳定"。
+//
+// 参考同器件的公开实现，结果通路普遍带三样东西：
+//   - 新鲜度 result_fresh / ready（结果是否可信、多久以前的）
+//   - dwell（连续停留若干帧才确认）
+//   - gain_change（增益变化直接作废）
+// 这里取其前两条，做一级**帧间滞回 + 保持**：
+//   · 连续 ON_N 帧检测到才点亮（滤掉单帧噪点）
+//   · 丢失后保持 HOLD_N 帧，期间输出**最后一次的好框**（框冻结而不是消失）
+// 只作用于送显示的那一路 rank1，不动跟踪内核，所以最坏情况是"框多停一会"。
+//
+// 64 位框布局与 color_box_ccl_96 一致：
+//   {cy[9:0], cx[10:0], valid, left[10:0], right[10:0], top[9:0], bottom[9:0]}
+//   bit42 = valid
+// ============================================================================
+module color_box_hold_96 #(
+    parameter [1:0] ON_N   = 2'd2,   // 连续多少帧才点亮
+    parameter [3:0] HOLD_N = 4'd8    // 丢失后保持多少帧
+)(
+    input              I_clk,
+    input              I_rst_n,
+    input              I_tuser,       // 帧边界（gam_tuser）
+    input      [191:0] I_boxes,       // 3 色 x 64bit rank1
+    output wire[191:0] O_boxes
+);
+
+    genvar gi;
+    generate for (gi = 0; gi < 3; gi = gi + 1) begin : g_hold
+        wire [63:0] bin = I_boxes[gi*64 +: 64];
+        wire        inv = bin[42];
+
+        reg [63:0] keep;     // 最后一次检测到的好框
+        reg [1:0]  onc;      // 连续有效帧数（饱和 ON_N）
+        reg [3:0]  msc;      // 连续丢失帧数（饱和 HOLD_N）
+        reg        ok;       // 当前是否对外有效
+
+        always @(posedge I_clk or negedge I_rst_n) begin
+            if (!I_rst_n) begin
+                keep <= 64'd0;
+                onc  <= 2'd0;
+                msc  <= HOLD_N;
+                ok   <= 1'b0;
+            end else if (I_tuser) begin
+                if (inv) begin
+                    keep <= bin;
+                    if (onc != ON_N) onc <= onc + 2'd1;
+                    msc  <= 4'd0;
+                    ok   <= (onc >= (ON_N - 2'd1)) ? 1'b1 : ok;
+                end else begin
+                    onc <= 2'd0;
+                    if (msc != HOLD_N) msc <= msc + 4'd1;
+                    ok  <= (msc >= (HOLD_N - 4'd1)) ? 1'b0 : ok;
+                end
+            end
+        end
+
+        // 坐标保持 keep，只有 valid 位跟着滞回状态走。
+        // 用组合输出而不是再打一拍 —— keep 本身就是寄存器，输出已经稳定，
+        // 多一级只会白花 192 个 FF（上一版实测 u_boxhold 花了 395 个 seq）。
+        assign O_boxes[gi*64 +: 64] = {keep[63:43], ok, keep[41:0]};
+    end endgenerate
+
+endmodule
+
+// ============================================================================
+// edge_detect_96 —— Sobel 边缘检测（2026-11-11 全分辨率重写）
 //
 // 为什么写在这个文件里: TD 每次 GUI 保存会重写工程文件(.al), 手工加进去的
 // 独立源文件会被丢掉 (denoise_96 就这么丢过, 报 HDL-8007: black box)。
 // 所以新模块必须塞进已在 .al 列表里的文件 —— isp_top.v 就在列表里。
 //
-// 资源: 两个行缓存(320x16) 标了 ram_style="block" -> 2 块 BRAM;
-//       亮度和 Sobel 全用移位加减, **0 个 DSP**。
-// 接口: 和主链路一样 96 位 = 4xRGB888, 一拍一个组, 一拍延迟。
-// 输出: 白边黑底 (边缘=0xffffff, 非边缘=0x000000)。
+// 为什么重写
+// ----------
+// 旧版先把相邻两个像素平均成一个 pair（水平 2:1 降采样），再在 pair 网格上做
+// Sobel。1 px 细线的梯度响应只剩全分辨率的一半，实测文字笔画会糊成实心块。
+// 用 numpy 位精确模型量化（工具见 fpga/tools/edge_compare.py）：
+//     text 图边缘像素  旧 76.6 个/行 → 新 61.4 个/行，笔画之间重新分开。
+// 现在改成**全分辨率 3x3 Sobel**，一拍直接算 4 个像素。
+//
+// 三个实现要点
+// ------------
+// 1) 行缓存改成 320 x 32 bit（一拍 4 个灰度像素一个 word），并且**同步读**才能
+//    推断成 ERAM。旧版是异步读，ram_style="block" 根本没生效——实测 u_edge
+//    ERAM=0、DRAM=256，那 256 个 LUT 比 2 块 ERAM 贵得多。
+// 2) 同步读天然晚一拍，所以本模块变成**两拍延迟**（旧版一拍）。isp_top 里的
+//    原图分支必须跟着多延一拍，否则卡通模式的描边会和色块错位。
+// 3) Sobel 窗口用**后向**（中心落在第 i-1 个像素），这样一个 6 列窗口就能把 4 个
+//    像素全算完，不用等下一组的第一个像素。代价是边缘整体右移 1 px
+//    （旧版是右移 2 px，反而更偏）。
+//
+// 资源: 2 块 ERAM + 纯移位加减，0 DSP。
+// 输出: 白边黑底（边缘=0xffffff，非边缘=0x000000），门限由 I_edge_th 给。
 // ============================================================================
 module edge_detect_96 #(
     parameter IMG_WIDTH  = 1280,
     parameter IMG_HEIGHT = 720,
-    parameter EDGE_TH    = 11'd80    // 缺省门，实际比较门限由上层 I_edge_th 输入
+    parameter EDGE_TH    = 11'd80    // 缺省门，实际门限仍由上层 I_edge_th 输入
 )(
     input               I_clk,
     input               I_rst_n,
@@ -2027,141 +2380,268 @@ module edge_detect_96 #(
     input               I_tvalid,
     input               I_tready,
     // 门限由上层传入：边缘显示使用 80，卡通描边使用 60。
-    // Sobel 幅度和比较器不变，后续硬件标定仍可只调整上层常量。
     input      [10:0]   I_edge_th,
     output reg          O_tlast,
     output reg          O_tuser,
     output reg [95:0]   O_tdata,
+    output reg [3:0]    O_strong,
     output reg          O_tvalid,
     output              O_tready
 );
 
 assign O_tready = I_tready;
 
+localparam GRP_W = IMG_WIDTH  >> 2;      // 320 组/行
+localparam LAST  = GRP_W - 1;
+
+// ---------------------------------------------------------------- 灰度
 wire [23:0] pix0 = I_tdata[95:72];
 wire [23:0] pix1 = I_tdata[71:48];
 wire [23:0] pix2 = I_tdata[47:24];
-wire [23:0] pix3 = I_tdata[23:0];
+wire [23:0] pix3 = I_tdata[23: 0];
 
-// Low-cost luminance approximation: R/4 + G/2 + B/4.  Its maximum is
-// 253, so it cannot overflow an 8-bit result and requires no divider.
+// R/4 + G/2 + B/4：最大值 253，不会溢出 8 bit，纯移位加减，与旧版一致。
 wire [7:0] gray0 = {2'b0,pix0[23:18]} + {1'b0,pix0[15:9]} + {2'b0,pix0[7:2]};
 wire [7:0] gray1 = {2'b0,pix1[23:18]} + {1'b0,pix1[15:9]} + {2'b0,pix1[7:2]};
 wire [7:0] gray2 = {2'b0,pix2[23:18]} + {1'b0,pix2[15:9]} + {2'b0,pix2[7:2]};
 wire [7:0] gray3 = {2'b0,pix3[23:18]} + {1'b0,pix3[15:9]} + {2'b0,pix3[7:2]};
 
-localparam IMG_WIDTH_GRP = (IMG_WIDTH >> 2);
+wire [31:0] bot_word = {gray0, gray1, gray2, gray3};
 
-// Use two grayscale samples per 4-pixel input beat.  Each sample represents
-// a neighbouring pair of pixels, providing 640 horizontal edge samples while
-// keeping the two line buffers small enough for this device.
-wire [8:0] pair_sum0 = {1'b0,gray0} + {1'b0,gray1};
-wire [8:0] pair_sum1 = {1'b0,gray2} + {1'b0,gray3};
-wire [7:0] pair0 = pair_sum0[8:1];
-wire [7:0] pair1 = pair_sum1[8:1];
+// ---------------------------------------------------------------- 行缓存
+// 两块 320x32 的缓冲：mem0 = 第 y-1 行，mem1 = 第 y-2 行。
+//
+// 同步读天生晚一拍，这里用「预取下一拍才会用到的地址」把它补回来：
+// 这一拍给地址，下一拍读出的数据正好对应当前像素，主通路**零额外延迟**，
+// 模块总延迟仍是 1 拍（不需要外部再补一条延迟链）。
+// 回绕时预取地址可能撞上写地址，用写转发旁路，不依赖 RAM 的 read-during-write 模式。
+//
+// ★ 属性值：TD 只认 ram_style = "bram"，不认 "block"（TD 自带 IP 的写法）。
+//   写 "block" 会被静默忽略，两块缓冲摊成 512 个 DRAM LUT。
+//
+// ★ 2026-11-12 实测：**就算写 "bram"，TD 也不会把 320 深的 RAM 映射到 ERAM**
+//   （构建报告 u_edge：eram=0、dram lut=512）。TD 是按**声明深度**做资源决策的，
+//   320x32 = 10240 bit 太小，它就给了分布式 RAM。
+//   对策：把声明深度拉到 1024（实际只用 0..319）。1024x32 = 32768 bit，用分布式
+//   RAM 实现要 ~800 个 LUT，综合器只能走 ERAM；每块占 2 个 ERAM，两块共 4 块
+// ★ 2026-11-12 实测结论：**深度不能拉大**。
+//   曾经把声明深度拉到 1024 想把 TD 逼进 ERAM（1024x32 = 32768 bit），结果：
+//       u_edge: eram = 0，dram lut 从 512 涨到 1152
+//   也就是 TD 仍然选择分布式 RAM，只是把分布式 RAM 放大了 4 倍 —— 白花约 640 LUT
+//   （≈320 slice），还留下一条扇出 1153 的地址线 pf_addr[4]，布线时是拥塞源。
+//   所以回到真实深度：320 x 36 = 11520 bit/块，两块 ≈ 640 LUT，这是 TD 的取舍，
+//   接受它。（真要用 ERAM 必须直接例化 ERAM 原语，那是另一件事。）
+(* ram_style = "bram" *) reg [35:0] mem0 [0:LAST];   // {强边位[3:0], 第 y-1 行灰度}
+(* ram_style = "bram" *) reg [35:0] mem1 [0:LAST];   // {强边位[3:0], 第 y-2 行灰度}
 
-(* ram_style = "block" *) reg [15:0] line1_mem [0:IMG_WIDTH_GRP-1];
-(* ram_style = "block" *) reg [15:0] line2_mem [0:IMG_WIDTH_GRP-1];
+reg [10:0] x_grp;        // 组号 0..319
+reg [9:0]  y_pos;        // 行号 0..719
 
-reg [10:0] x_grp;
-reg [10:0] y_pos;
+reg [35:0] r0, r1;       // 同步读输出
+reg [35:0] fwd0, fwd1;   // 写转发值
+reg        col_l;        // 上一拍是否发生预取/写地址冲突
 
-wire [15:0] top_word = line2_mem[x_grp];
-wire [15:0] mid_word = line1_mem[x_grp];
-wire [15:0] bot_word = {pair0,pair1};
+// 强边位（本组的 4 个像素），后面才赋值，这里先声明给写端口用
+wire e0, e1, e2, e3;
 
-wire [7:0] top0 = top_word[15:8];
-wire [7:0] top1 = top_word[7:0];
-wire [7:0] mid0 = mid_word[15:8];
-wire [7:0] mid1 = mid_word[7:0];
-
-reg [7:0] top_prev2, top_prev1;
-reg [7:0] mid_prev2, mid_prev1;
-reg [7:0] bot_prev2, bot_prev1;
-
-function [13:0] sobel_mag;
-    input [7:0] a00, a01, a02;
-    input [7:0] a10, a11, a12;
-    input [7:0] a20, a21, a22;
-    reg signed [12:0] gx_f;
-    reg signed [12:0] gy_f;
-    reg [12:0] abs_gx_f;
-    reg [12:0] abs_gy_f;
-    begin
-        gx_f = -$signed({1'b0,a00}) + $signed({1'b0,a02})
-             - ($signed({1'b0,a10}) <<< 1) + ($signed({1'b0,a12}) <<< 1)
-             - $signed({1'b0,a20}) + $signed({1'b0,a22});
-        gy_f =  $signed({1'b0,a00}) + ($signed({1'b0,a01}) <<< 1) + $signed({1'b0,a02})
-             - $signed({1'b0,a20}) - ($signed({1'b0,a21}) <<< 1) - $signed({1'b0,a22});
-        abs_gx_f = gx_f[12] ? (~gx_f + 1'b1) : gx_f;
-        abs_gy_f = gy_f[12] ? (~gy_f + 1'b1) : gy_f;
-        sobel_mag = abs_gx_f + abs_gy_f;
-    end
-endfunction
-
-// Two Sobel windows are evaluated per input beat. Each result is duplicated
-// to its corresponding pair of output pixels.
-wire [13:0] mag0 = sobel_mag(top_prev2,top_prev1,top0,
-                             mid_prev2,mid_prev1,mid0,
-                             bot_prev2,bot_prev1,pair0);
-wire [13:0] mag1 = sobel_mag(top_prev1,top0,top1,
-                             mid_prev1,mid0,mid1,
-                             bot_prev1,pair0,pair1);
-
-wire window_valid = (y_pos >= 11'd2) && (x_grp != 11'd0) && !I_tuser;
-wire edge0 = window_valid && (mag0 >= I_edge_th);
-wire edge1 = window_valid && (mag1 >= I_edge_th);
-
-wire [23:0] out0 = edge0 ? 24'hffffff : 24'h000000;
-wire [23:0] out1 = edge1 ? 24'hffffff : 24'h000000;
+wire        de       = I_tvalid;
+wire        tuser_v  = I_tuser && I_tvalid;
+wire [10:0] cur_addr = tuser_v ? 11'd0 : x_grp;
+// 预取：这一拍给出「下一拍才会用到」的组号
+wire [10:0] pf_addr  = (!de || cur_addr == LAST) ? 11'd0 : (cur_addr + 11'd1);
+wire        col_hit  = de && (pf_addr == cur_addr);
+wire [35:0] mid_word = col_l ? fwd0 : r0;   // 第 y-1 行（本组）
+wire [35:0] top_word = col_l ? fwd1 : r1;   // 第 y-2 行（本组）
+wire [31:0] mid_gray = mid_word[31:0];      // 第 y-1 行灰度
+wire [31:0] top_gray = top_word[31:0];      // 第 y-2 行灰度
+wire [3:0]  mid_sb   = mid_word[35:32];     // 第 y-1 行强边位，bit3 = 最左像素
 
 always @(posedge I_clk or negedge I_rst_n) begin
-    if(!I_rst_n) begin
-        O_tlast  <= 1'b0;
-        O_tuser  <= 1'b0;
-        O_tdata  <= 96'd0;
-        O_tvalid <= 1'b0;
-        x_grp    <= 11'd0;
-        y_pos    <= 11'd0;
-        top_prev2 <= 8'd0; top_prev1 <= 8'd0;
-        mid_prev2 <= 8'd0; mid_prev1 <= 8'd0;
-        bot_prev2 <= 8'd0; bot_prev1 <= 8'd0;
-        // Do not clear line memories here.  A reset loop turns the 10-Kbit
-        // buffers into slice registers on this device.  The first two rows
-        // are masked by window_valid and naturally initialize both buffers.
+    if (!I_rst_n) begin
+        x_grp <= 11'd0;
+        y_pos <= 10'd0;
+        r0    <= 36'd0;
+        r1    <= 36'd0;
+        fwd0  <= 36'd0;
+        fwd1  <= 36'd0;
+        col_l <= 1'b0;
     end else begin
-        O_tlast  <= I_tlast;
-        O_tuser  <= I_tuser;
-        O_tvalid <= I_tvalid;
+        // ---- 预取读：地址是下一拍要用的组号 ----
+        r0 <= mem0[pf_addr];
+        r1 <= mem1[pf_addr];
 
-        if(I_tvalid) begin
-            O_tdata <= {out0,out0,out1,out1};
+        // ---- 写转发：万一回绕撞地址，用写数据旁路 ----
+        col_l <= col_hit;
+        fwd0  <= {e0,e1,e2,e3, bot_word};
+        fwd1  <= mid_word;
 
-            line2_mem[x_grp] <= mid_word;
-            line1_mem[x_grp] <= bot_word;
-
-            top_prev2 <= top0; top_prev1 <= top1;
-            mid_prev2 <= mid0; mid_prev1 <= mid1;
-            bot_prev2 <= pair0; bot_prev1 <= pair1;
-
-            if(I_tuser) begin
-                x_grp <= 11'd1;
-                y_pos <= 11'd0;
-            end else if(x_grp == IMG_WIDTH_GRP - 1) begin
-                x_grp <= 11'd0;
-                if(y_pos == IMG_HEIGHT - 1)
-                    y_pos <= 11'd0;
-                else
-                    y_pos <= y_pos + 1'b1;
-                top_prev2 <= 8'd0; top_prev1 <= 8'd0;
-                mid_prev2 <= 8'd0; mid_prev1 <= 8'd0;
-                bot_prev2 <= 8'd0; bot_prev1 <= 8'd0;
-            end else begin
-                x_grp <= x_grp + 1'b1;
-            end
-        end else begin
-            O_tdata <= 96'd0;
+        // ---- 写：本行（灰度 + 强边位）进 mem0，第 y-1 行滚动进 mem1 ----
+        if (de) begin
+            mem0[cur_addr] <= {e0,e1,e2,e3, bot_word};
+            mem1[cur_addr] <= mid_word;
         end
+
+        if (de) begin
+            if (I_tuser) begin
+                x_grp <= 11'd1;
+                y_pos <= 10'd0;
+            end else if (cur_addr == LAST) begin
+                x_grp <= 11'd0;
+                y_pos <= (y_pos == IMG_HEIGHT - 1) ? 10'd0 : (y_pos + 10'd1);
+            end else begin
+                x_grp <= x_grp + 11'd1;
+            end
+        end
+    end
+end
+
+// ------------------------------------------------- 上一组的最后两个像素
+// 后向窗口要拿左边两个邻居，它们来自上一组的 pixel2/pixel3。
+reg [7:0] t_c2, t_c1, m_c2, m_c1, b_c2, b_c1;
+
+always @(posedge I_clk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
+        t_c2 <= 8'd0; t_c1 <= 8'd0;
+        m_c2 <= 8'd0; m_c1 <= 8'd0;
+        b_c2 <= 8'd0; b_c1 <= 8'd0;
+    end else if (I_tvalid) begin
+        t_c2 <= top_gray[15: 8]; t_c1 <= top_gray[ 7: 0];
+        m_c2 <= mid_gray[15: 8]; m_c1 <= mid_gray[ 7: 0];
+        b_c2 <= bot_word[15: 8]; b_c1 <= bot_word[ 7: 0];
+    end
+end
+
+// ------------------------------------------------- 6 列 x 3 行窗口
+wire [7:0] t0 = t_c2, t1 = t_c1;
+wire [7:0] t2 = top_gray[31:24], t3 = top_gray[23:16];
+wire [7:0] t4 = top_gray[15: 8], t5 = top_gray[ 7: 0];
+
+wire [7:0] m0 = m_c2, m1 = m_c1;
+wire [7:0] m2 = mid_gray[31:24], m3 = mid_gray[23:16];
+wire [7:0] m4 = mid_gray[15: 8], m5 = mid_gray[ 7: 0];
+
+wire [7:0] b0 = b_c2, b1 = b_c1;
+wire [7:0] b2 = bot_word[31:24], b3 = bot_word[23:16];
+wire [7:0] b4 = bot_word[15: 8], b5 = bot_word[ 7: 0];
+
+// 纵向 1-2-1 加权和：V[j] = top[j] + 2*mid[j] + bot[j]
+// 4 个像素共用这 6 个 V，不用各算一遍。
+wire [9:0] V0 = {2'b0,t0} + {1'b0,m0,1'b0} + {2'b0,b0};
+wire [9:0] V1 = {2'b0,t1} + {1'b0,m1,1'b0} + {2'b0,b1};
+wire [9:0] V2 = {2'b0,t2} + {1'b0,m2,1'b0} + {2'b0,b2};
+wire [9:0] V3 = {2'b0,t3} + {1'b0,m3,1'b0} + {2'b0,b3};
+wire [9:0] V4 = {2'b0,t4} + {1'b0,m4,1'b0} + {2'b0,b4};
+wire [9:0] V5 = {2'b0,t5} + {1'b0,m5,1'b0} + {2'b0,b5};
+
+// 横向 1-2-1 加权和：HT/HB 只算上、下两行
+wire [9:0] HT0 = {2'b0,t0} + {1'b0,t1,1'b0} + {2'b0,t2};
+wire [9:0] HT1 = {2'b0,t1} + {1'b0,t2,1'b0} + {2'b0,t3};
+wire [9:0] HT2 = {2'b0,t2} + {1'b0,t3,1'b0} + {2'b0,t4};
+wire [9:0] HT3 = {2'b0,t3} + {1'b0,t4,1'b0} + {2'b0,t5};
+wire [9:0] HB0 = {2'b0,b0} + {1'b0,b1,1'b0} + {2'b0,b2};
+wire [9:0] HB1 = {2'b0,b1} + {1'b0,b2,1'b0} + {2'b0,b3};
+wire [9:0] HB2 = {2'b0,b2} + {1'b0,b3,1'b0} + {2'b0,b4};
+wire [9:0] HB3 = {2'b0,b3} + {1'b0,b4,1'b0} + {2'b0,b5};
+
+// 梯度：gx = V[i] - V[i-2]，gy = HT[i] - HB[i]
+wire signed [10:0] gx0 = $signed({1'b0,V0}) - $signed({1'b0,V2});
+wire signed [10:0] gx1 = $signed({1'b0,V1}) - $signed({1'b0,V3});
+wire signed [10:0] gx2 = $signed({1'b0,V2}) - $signed({1'b0,V4});
+wire signed [10:0] gx3 = $signed({1'b0,V3}) - $signed({1'b0,V5});
+wire signed [10:0] gy0 = $signed({1'b0,HT0}) - $signed({1'b0,HB0});
+wire signed [10:0] gy1 = $signed({1'b0,HT1}) - $signed({1'b0,HB1});
+wire signed [10:0] gy2 = $signed({1'b0,HT2}) - $signed({1'b0,HB2});
+wire signed [10:0] gy3 = $signed({1'b0,HT3}) - $signed({1'b0,HB3});
+
+wire [10:0] ax0 = gx0[10] ? (~gx0 + 11'd1) : gx0[10:0];
+wire [10:0] ax1 = gx1[10] ? (~gx1 + 11'd1) : gx1[10:0];
+wire [10:0] ax2 = gx2[10] ? (~gx2 + 11'd1) : gx2[10:0];
+wire [10:0] ax3 = gx3[10] ? (~gx3 + 11'd1) : gx3[10:0];
+wire [10:0] ay0 = gy0[10] ? (~gy0 + 11'd1) : gy0[10:0];
+wire [10:0] ay1 = gy1[10] ? (~gy1 + 11'd1) : gy1[10:0];
+wire [10:0] ay2 = gy2[10] ? (~gy2 + 11'd1) : gy2[10:0];
+wire [10:0] ay3 = gy3[10] ? (~gy3 + 11'd1) : gy3[10:0];
+
+wire [11:0] mag0 = {1'b0,ax0} + {1'b0,ay0};
+wire [11:0] mag1 = {1'b0,ax1} + {1'b0,ay1};
+wire [11:0] mag2 = {1'b0,ax2} + {1'b0,ay2};
+wire [11:0] mag3 = {1'b0,ax3} + {1'b0,ay3};
+
+// 前两行、每行第一组没有完整的左邻，直接置黑。
+wire        win_ok = (y_pos >= 10'd2) && (cur_addr != 11'd0);
+
+// ---------------------------------------------------------------- 双门限滞回
+// 2026-11-12 上板照片确认：单一门限分不开"家具轮廓"和"墙面/木纹纹理"，
+// 两者的梯度幅值区间是重叠的，调高就丢轮廓、调低就满屏噪点。
+//
+// 改成 Canny 的双门限滞回（不做 NMS）：
+//   · 强边（mag >= HI，即 I_edge_th）→ 一定要
+//   · 弱边（mag >= HI/2）→ 只有 3x3 邻域里连到强边时才保留
+// 真轮廓的旁边总有强边，所以连通性保住；孤立纹理斑点周围没有强边，被剔掉。
+//
+// 邻域只用**已经看到过的**像素（因果）：
+//   上一行（mem0 里存的 mid 强边位）：pixel i-1 / i / i+1
+//   本行：左邻 pixel i-1
+wire [11:0] th_ext = {1'b0, I_edge_th};
+// 2026-11-12: 弱门限从"强门限的一半"提到 5/8。
+// 原来 60/30 —— 弱边太容易存活（只要旁边有一个强边就留下），纹理区仍然出噪点。
+// 改成 5/8（60 -> 37）：弱边要更接近强边才被连通性救回来，
+// 孤立的纹理响应更容易被剔掉。I_edge_th 仍只调一个数，弱门限自动跟着走。
+wire [11:0] lo_ext = {2'b0, I_edge_th[10:1]} + {3'b0, I_edge_th[10:3]};   // 5/8 强门限
+
+assign e0 = win_ok && (mag0 >= th_ext);
+assign e1 = win_ok && (mag1 >= th_ext);
+assign e2 = win_ok && (mag2 >= th_ext);
+assign e3 = win_ok && (mag3 >= th_ext);
+
+wire w0 = win_ok && (mag0 >= lo_ext);
+wire w1 = win_ok && (mag1 >= lo_ext);
+wire w2 = win_ok && (mag2 >= lo_ext);
+wire w3 = win_ok && (mag3 >= lo_ext);
+
+// 上一组的边缘强边位（本行 pixel3 / 上一行 pixel3）
+reg sb_p, msb_p;
+always @(posedge I_clk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
+        sb_p  <= 1'b0;
+        msb_p <= 1'b0;
+    end else if (I_tvalid) begin
+        sb_p  <= e3;
+        msb_p <= mid_sb[0];
+    end
+end
+
+// 邻域支撑：本行左邻 + 上一行 3 个（pixel i-1 / i / i+1）
+wire sup0 = sb_p || msb_p   || mid_sb[3] || mid_sb[2];
+wire sup1 = e0   || mid_sb[3] || mid_sb[2] || mid_sb[1];
+wire sup2 = e1   || mid_sb[2] || mid_sb[1] || mid_sb[0];
+wire sup3 = e2   || mid_sb[1] || mid_sb[0];
+
+wire k0 = e0 || (w0 && sup0);
+wire k1 = e1 || (w1 && sup1);
+wire k2 = e2 || (w2 && sup2);
+wire k3 = e3 || (w3 && sup3);
+
+// ---------------------------------------------------------------- 显示输出
+// 仍是二值（白边黑底）。门限由上层 I_edge_th 给，当前 60；弱门限自动取一半。
+wire [23:0] o0 = k0 ? 24'hffffff : 24'h000000;
+wire [23:0] o1 = k1 ? 24'hffffff : 24'h000000;
+wire [23:0] o2 = k2 ? 24'hffffff : 24'h000000;
+wire [23:0] o3 = k3 ? 24'hffffff : 24'h000000;
+
+always @(posedge I_clk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
+        O_tdata  <= 96'd0;
+        O_strong <= 4'd0;
+        O_tvalid <= 1'b0;
+        O_tuser  <= 1'b0;
+        O_tlast  <= 1'b0;
+    end else begin
+        O_tdata  <= I_tvalid ? {o0,o1,o2,o3} : 96'd0;
+        O_strong <= I_tvalid ? {e0,e1,e2,e3} : 4'd0;
+        O_tvalid <= I_tvalid;
+        O_tuser  <= I_tuser;
+        O_tlast  <= I_tlast;
     end
 end
 
@@ -2190,7 +2670,7 @@ module cartoon_effect_96 #(
     parameter QUANT_BITS = 2    // 2 => 64 色（明显卡通）；4 => 4096 色（较柔和）
 )(
     input      [95:0] I_color,   // 4 x RGB888 原图
-    input      [95:0] I_edge,    // 4 x RGB888 边缘图，0xffffff = 边缘
+    input      [3:0]  I_strong,  // 每像素 1 位强边标志，bit3 = 最左像素
     output reg [95:0] O_cartoon,
     input             I_clk,
     input             I_rst_n
@@ -2204,14 +2684,15 @@ module cartoon_effect_96 #(
     // col_d/edg_d delay one 4-pixel group so a left neighbour exists; the last
     // pixel of a group uses this group's first pixel as its right neighbour
     // (a 4-pixel error, invisible).
-    reg  [95:0] col_d, edg_d;
+    reg  [95:0] col_d;
+    reg  [3:0]  strong_d;
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
-            col_d <= 96'd0;
-            edg_d <= 96'd0;
+            col_d    <= 96'd0;
+            strong_d <= 4'd0;
         end else begin
-            col_d <= I_color;
-            edg_d <= I_edge;
+            col_d    <= I_color;
+            strong_d <= I_strong;
         end
     end
 
@@ -2244,10 +2725,10 @@ module cartoon_effect_96 #(
                        f_sm(n3l[15: 8], d3[15: 8], n3r[15: 8]),
                        f_sm(n3l[ 7: 0], d3[ 7: 0], n3r[ 7: 0]) };
 
-    wire [23:0] e0 = edg_d[95:72];
-    wire [23:0] e1 = edg_d[71:48];
-    wire [23:0] e2 = edg_d[47:24];
-    wire [23:0] e3 = edg_d[23: 0];
+    wire s0 = strong_d[3];
+    wire s1 = strong_d[2];
+    wire s2 = strong_d[1];
+    wire s3 = strong_d[0];
 
     // 单通道量化：保留高 QUANT_BITS 位并复制填充到 8 位，保持满量程。
     // ★ 2026-10-11: 必须为**每一档**都写一条 case。原来只写了 2 和 4，
@@ -2269,10 +2750,10 @@ module cartoon_effect_96 #(
 
     function [23:0] f_pix;
         input [23:0] col;
-        input [23:0] edg;
+        input        strong;
         begin
-            if (edg == 24'hffffff)
-                f_pix = 24'h000000;                                  // 边缘 -> 黑色描边
+            if (strong)
+                f_pix = 24'h000000;                                  // 强边 -> 黑色描边
             else
                 f_pix = {f_quant(col[23:16]),
                          f_quant(col[15: 8]),
@@ -2281,7 +2762,7 @@ module cartoon_effect_96 #(
     endfunction
 
     always @(*) begin
-        O_cartoon = {f_pix(b0,e0), f_pix(b1,e1), f_pix(b2,e2), f_pix(b3,e3)};
+        O_cartoon = {f_pix(b0,s0), f_pix(b1,s1), f_pix(b2,s2), f_pix(b3,s3)};
     end
 
 endmodule

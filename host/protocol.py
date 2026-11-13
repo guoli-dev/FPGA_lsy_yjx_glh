@@ -1,13 +1,24 @@
 from dataclasses import dataclass
 
 
+# 板上按键可以把模式循环到 0-7（见 fpga/docs/DEMO_GUIDE.md），
+# 所以状态帧里的 mode 必须能识别全部 8 个，否则 5/6/7 会被当成未知帧丢弃，
+# 上位机会停在旧模式并与 HDMI 屏显不一致。
 MODE_NAMES = {
     0: "原始画面",
     1: "边缘检测",
     2: "卡通化",
     3: "色块追踪",
     4: "运动检测",
+    5: "AWB 左右对比",
+    6: "Gamma 左右对比",
+    7: "AE 实时",
 }
+
+# 以太网 0x01 模式命令只接受 0-4（eth_host.v 里的 `R_udp_data <= 8'd4`）。
+# 5-7 只能按板上按键切换 —— 界面上的按钮与 /mode 接口都按这个集合门控，
+# 避免"点了按钮、页面变了、FPGA 根本没切"的假成功。
+SETTABLE_MODES = frozenset({0, 1, 2, 3, 4})
 
 
 @dataclass(frozen=True)
@@ -55,8 +66,8 @@ class MotionPacket:
 
 
 def encode_mode(mode: int) -> bytes:
-    if mode not in MODE_NAMES:
-        raise ValueError("mode must be between 0 and 4")
+    if mode not in SETTABLE_MODES:
+        raise ValueError("mode 0-4 only; 5-7 need the board button")
     return bytes((0x01, mode))
 
 

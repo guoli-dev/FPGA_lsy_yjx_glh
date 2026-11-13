@@ -388,12 +388,23 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
 
     reg  [19:0]   in_r_r1;
     reg  [19:0]   in_b_r1;
+    // 2026-11-12: 增益改成"整帧恒定"。
+    //
+    // 原来每个有效拍都启动除法、S_div_done 一到就更新增益，用的是**运行中**的
+    // 累加和 —— 同一帧里画面上半部分和下半部分拿到的增益不一样（累加和从帧首
+    // 开始累，越往后越接近真实平均），静态场景表现为从上到下的色偏渐变。
+    //
+    // 参考实现的做法是"帧末算一次、整帧恒定"：这里用最小改动达到同样效果 ——
+    //   · 只在消隐期（!I_tvalid_r1）接受除法结果。最后一个有效像素的除法
+    //     恰好在 50 拍后、也就是消隐期里完成，那时累加和已经是整帧的；
+    //   · 去掉 tuser 时把增益复位成 1.0 的动作，否则刚算好的增益会被抹掉。
+    // 于是每一帧的增益在整帧内恒定，且用的是上一整帧的统计。
     always @(posedge I_clk or negedge I_rst_n)begin 
-        if(!I_rst_n || I_tuser)begin
+        if(!I_rst_n)begin
             in_r_r1 <= 20'h10000;
             in_b_r1 <= 20'h10000;
         end
-        else if(S_div_done)begin
+        else if(S_div_done && !I_tvalid_r1)begin
             if(!S_div_sel_pipe[49]) begin
                 if(|S_div_quotient[47:20])
                     in_r_r1 <= 20'hfffff;

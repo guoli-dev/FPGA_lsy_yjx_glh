@@ -32,3 +32,9 @@ fpga/project/td_project/best_result/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- 本地参考资料（真题、别人写的解法等，不含第三方版权内容进公开仓）---
+.ref/
+skills_test/
+_merge_src/
+.probe.txt
