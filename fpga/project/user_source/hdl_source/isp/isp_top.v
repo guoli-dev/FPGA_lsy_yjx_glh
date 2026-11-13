@@ -336,7 +336,7 @@ edge_detect_96 #(
     // 45 时墙面/木纹这类天然纹理的梯度全被放行，画面满是密集噪点；
     // 家具轮廓的梯度明显更强，60 能把纹理挡在外面。
     // 现场若还嫌噪点多 → 提到 70；嫌轮廓丢 → 降到 55。只改这一个数。
-    .I_edge_th(11'd80),   // 2026-11-13: 68 -> 92 -> 110 -> 80。加了 NMS 细化后边变细，110 会断线，降回 80 (弱门限自动跟到 50)
+    .I_edge_th(11'd110),  // 2026-11-13: 68 -> 92 -> 110。gamma 暗部 x1.75 把噪声放大，92 仍有残留 (弱门限自动跟到 68)
     .I_tlast (gam_tlast ),
     .I_tuser (gam_tuser ),
     .I_tdata (gam_tdata ),
@@ -2568,26 +2568,6 @@ wire [11:0] mag2 = {1'b0,ax2} + {1'b0,ay2};
 wire [11:0] mag3 = {1'b0,ax3} + {1'b0,ay3};
 
 // 前两行、每行第一组没有完整的左邻，直接置黑。
-// ---------------------------------------------------------------- NMS 细化
-// 2026-11-13: 上板照片确认边是 2~4 像素的粗线 —— Sobel 只做了阈值，没做细化。
-// 用窗口里已有的信号做局部极值判断，把粗边压成单像素:
-//   梯度主要沿 x (ax>=ay) -> 边是竖的 -> 比较中心列 V[i+1] 与左右 V[i] V[i+2]
-//   否则                 -> 边是横的 -> 比较中心行 m[i+1] 与上下 t[i+1] b[i+1]
-// 只多几个比较器，不加存储、不加 DSP。
-// 注意 V[i] 是以列 i 为中心的三行加权和, 所以像素 i 的窗口中心是 V[i+1]。
-wire nx0 = (((V1 >= V0) && (V1 >= V2)) || ((V1 <= V0) && (V1 <= V2)));
-wire nx1 = (((V2 >= V1) && (V2 >= V3)) || ((V2 <= V1) && (V2 <= V3)));
-wire nx2 = (((V3 >= V2) && (V3 >= V4)) || ((V3 <= V2) && (V3 <= V4)));
-wire nx3 = (((V4 >= V3) && (V4 >= V5)) || ((V4 <= V3) && (V4 <= V5)));
-wire ny0 = (((m1 >= t1) && (m1 >= b1)) || ((m1 <= t1) && (m1 <= b1)));
-wire ny1 = (((m2 >= t2) && (m2 >= b2)) || ((m2 <= t2) && (m2 <= b2)));
-wire ny2 = (((m3 >= t3) && (m3 >= b3)) || ((m3 <= t3) && (m3 <= b3)));
-wire ny3 = (((m4 >= t4) && (m4 >= b4)) || ((m4 <= t4) && (m4 <= b4)));
-wire nms0 = (ax0 >= ay0) ? nx0 : ny0;
-wire nms1 = (ax1 >= ay1) ? nx1 : ny1;
-wire nms2 = (ax2 >= ay2) ? nx2 : ny2;
-wire nms3 = (ax3 >= ay3) ? nx3 : ny3;
-
 wire        win_ok = (y_pos >= 10'd2) && (cur_addr != 11'd0);
 
 // ---------------------------------------------------------------- 双门限滞回
@@ -2609,15 +2589,15 @@ wire [11:0] th_ext = {1'b0, I_edge_th};
 // 孤立的纹理响应更容易被剔掉。I_edge_th 仍只调一个数，弱门限自动跟着走。
 wire [11:0] lo_ext = {2'b0, I_edge_th[10:1]} + {3'b0, I_edge_th[10:3]};   // 5/8 强门限
 
-assign e0 = win_ok && nms0 && (mag0 >= th_ext);
-assign e1 = win_ok && nms1 && (mag1 >= th_ext);
-assign e2 = win_ok && nms2 && (mag2 >= th_ext);
-assign e3 = win_ok && nms3 && (mag3 >= th_ext);
+assign e0 = win_ok && (mag0 >= th_ext);
+assign e1 = win_ok && (mag1 >= th_ext);
+assign e2 = win_ok && (mag2 >= th_ext);
+assign e3 = win_ok && (mag3 >= th_ext);
 
-wire w0 = win_ok && nms0 && (mag0 >= lo_ext);
-wire w1 = win_ok && nms1 && (mag1 >= lo_ext);
-wire w2 = win_ok && nms2 && (mag2 >= lo_ext);
-wire w3 = win_ok && nms3 && (mag3 >= lo_ext);
+wire w0 = win_ok && (mag0 >= lo_ext);
+wire w1 = win_ok && (mag1 >= lo_ext);
+wire w2 = win_ok && (mag2 >= lo_ext);
+wire w3 = win_ok && (mag3 >= lo_ext);
 
 // 上一组的边缘强边位（本行 pixel3 / 上一行 pixel3）
 reg sb_p, msb_p;
