@@ -2026,8 +2026,8 @@ module color_box_ccl_96 #(
     //   · 目标没动 → 框不动（等价死区）
     //   · 有微小抖动 → 每帧挪 8px 就收敛回来，不会来回跳
     //   · 真实运动 → 平滑跟随，最快 8px/帧 ≈ 480px/s
-    localparam [10:0] SLEW   = 11'd32;
-    localparam [ 9:0] SLEW_Y = 10'd32;
+    localparam [10:0] SLEW   = 11'd64;   // 2026-11-14: 32 -> 64，跟随速度翻倍（0 面积，只是常数）
+    localparam [ 9:0] SLEW_Y = 10'd64;   // 同上
     reg [10:0] D_x0, D_x1;
     reg [ 9:0] D_y0, D_y1;
 
