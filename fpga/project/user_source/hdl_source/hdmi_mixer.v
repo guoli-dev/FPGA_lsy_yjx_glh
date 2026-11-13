@@ -1466,54 +1466,47 @@ module hdmi_mixer #(
     wire [7:0]  C_ly        = S_y[7:0] - 8'd34;   // 相对 Logo 上边界
     wire [10:0] C_row_base  = C_ly * 11'd18;      // 每行 18 段
 
+    // 段状态：S_seg 是当前段号，S_lx/S_ly 是延迟一拍的坐标（和 ROM 输出对齐）
+    reg  [4:0] S_seg;
+    reg  [7:0] S_lx;
+    reg  [7:0] S_ly;
+
+    // 地址组合给出（不再寄存一层）——ROM 自带的寄存器正好顶替原来的第 1 级
+    wire [10:0] C_rowb = C_ly * 11'd18;
     reg         R1_logo_in;
-    reg  [7:0]  R1_lx;
-    reg  [7:0]  R1_ly;
-    reg  [4:0]  R1_seg;
-    reg  [10:0] R1_addr;
-    reg  [39:0] R1_seg_d;   // 上一拍的段数据（和 R1_lx 对齐）
+    wire [10:0] C_addr = C_rowb + {6'd0, S_seg};
 
     wire [39:0] C_seg;
     anlogic_logo_rle_rom u_anlogic_logo_rle_rom(
         .I_clk ( I_clk  ),
-        .I_addr( R1_addr),
+        .I_addr( C_addr ),
         .O_seg ( C_seg  )
     );
 
-    wire [7:0] C_seg_end = R1_seg_d[39:32] + R1_seg_d[31:24];
+    wire [7:0] C_seg_end = C_seg[39:32] + C_seg[31:24];
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
-            R1_logo_in <= 1'b0;
-            R1_lx      <= 8'd0;
-            R1_ly      <= 8'd0;
-            R1_seg     <= 5'd0;
-            R1_addr    <= 11'd0;
-            R1_seg_d   <= 40'd0;
+            S_seg <= 5'd0;
+            S_lx  <= 8'd0;
+            S_ly  <= 8'd0;
         end else begin
             R1_logo_in <= I_logo_en && C_logo_in;
-            R1_lx      <= C_lx;
-            R1_ly      <= C_ly;
-            R1_seg_d   <= C_seg;
-            if (C_ly != R1_ly) begin
-                // 进入新的一行：从第 0 段开始
-                R1_seg  <= 5'd0;
-                R1_addr <= C_row_base;
-            end else if (R1_lx > C_seg_end) begin
-                // 本像素已越过当前段 -> 换下一段（数据下一拍到，正好赶上）
-                R1_seg  <= R1_seg + 5'd1;
-                R1_addr <= R1_addr + 11'd1;
+            S_lx <= C_lx;
+            S_ly <= C_ly;
+            if (C_ly != S_ly) begin
+                S_seg <= 5'd0;                      // 新的一行，回到第 0 段
+            end else if (S_lx > C_seg_end) begin
+                S_seg <= S_seg + 5'd1;              // 越过本段 -> 下一段
             end
         end
     end
 
-    // 第 2 级：段内才显示
-    wire        C_logo_hit = (R1_lx >= R1_seg_d[39:32]) && (R1_lx <= C_seg_end);
-    wire [23:0] C_logo_col = R1_seg_d[23:0];
+    // 命中判断：u S_lx 是上一拍的 x，与 C_seg（上一拍地址的段）严格对齐
+    wire C_logo_hit = (S_lx >= C_seg[39:32]) && (S_lx <= C_seg_end);
 
-
-    reg        S_logo_on_r;      // 本像素要不要画 Logo
-    reg [23:0] S_logo_col_r;     // Logo 像素颜色
+    reg        S_logo_on_r;
+    reg [23:0] S_logo_col_r;
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
@@ -1521,7 +1514,7 @@ module hdmi_mixer #(
             S_logo_col_r <= 24'd0;
         end else begin
             S_logo_on_r  <= R1_logo_in && C_logo_hit;
-            S_logo_col_r <= C_logo_col;
+            S_logo_col_r <= C_seg[23:0];
         end
     end
 
