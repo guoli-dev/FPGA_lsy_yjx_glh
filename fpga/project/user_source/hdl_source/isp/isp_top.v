@@ -966,15 +966,60 @@ module color_detect_96 #(
     // 包括上游 awb 那个 O_tuser 组合直通 / O_tvalid 延两拍的错拍条件,
     // 两个信号同延一拍后, 相对关系原样保持, 跟踪器里那句
     // `I_tuser && !I_tvalid` 照旧成立。
-    reg [3:0] hit_r_r, hit_g_r, hit_b_r;
-    reg       tuser_r,  tvalid_r;
+    // ---- vertical 3-point median on the group hit mask (2026-11-15) ----------
+    // The horizontal 3-point median above removes isolated hits along a line but
+    // keeps a single-row speck that runs vertically. A second median in the
+    // vertical direction turns it into a proper cross (plus) 5-point median.
+    //
+    // Storage: 2 lines x 320 groups x 3 colours = 1920 bit. As plain registers
+    // that is ~1920 slices (the old 94.2% design could not afford it); as small
+    // RAM it collapses to roughly 60 LUT of distributed RAM. Keep the arrays
+    // plain (no ram_style attribute) and let TD infer DRAM.
+    //
+    // Latency bookkeeping: ov1/ov2 and cur_d all become valid at t+1 relative to
+    // the hit, so hr_v/hg_v/hb_v are ready exactly 1 cycle after the hit - the
+    // same delay the old hit register had. tuser_r/tvalid_r stay 1 cycle, so the
+    // alignment into the CCL is unchanged.
+    //
+    // vx counts groups inside a line and wraps at 319, independent of tlast.
+    reg [8:0] vx;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n)
+            vx <= 9'd0;
+        else if (I_tvalid)
+            vx <= (vx == 9'd319) ? 9'd0 : (vx + 9'd1);
+    end
 
+    reg [2:0] ln1 [0:319];      // previous line     : {g, r, b}
+    reg [2:0] ln2 [0:319];      // line before that
+    reg [2:0] ov1, ov2;         // synchronous read-out at vx
+
+    always @(posedge I_clk) begin
+        ov1 <= ln1[vx];
+        ov2 <= ln2[vx];
+        if (I_tvalid) begin
+            ln2[vx] <= ln1[vx];             // read-before-write gives the old value
+            ln1[vx] <= {hg_m, hr_m, hb_m};
+        end
+    end
+
+    reg [2:0] cur_d;
+    always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m};
+
+    // median of three = at least two true
+    wire hr_v = (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]);
+    wire hg_v = (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0]);
+    wire hb_v = (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]);
+
+    wire [3:0] hit_r_r = {4{hr_v}};
+    wire [3:0] hit_g_r = {4{hg_v}};
+    wire [3:0] hit_b_r = {4{hb_v}};
+
+    reg       tuser_r,  tvalid_r;
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n) begin
-            hit_r_r <= 4'd0; hit_g_r <= 4'd0; hit_b_r <= 4'd0;
             tuser_r <= 1'b0; tvalid_r <= 1'b0;
         end else begin
-            hit_r_r <= hit_r; hit_g_r <= hit_g; hit_b_r <= hit_b;
             tuser_r <= I_tuser; tvalid_r <= I_tvalid;
         end
     end
