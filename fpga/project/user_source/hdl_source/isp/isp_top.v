@@ -155,6 +155,8 @@ awb #(
 // 带一级流水, tlast/tuser/tvalid 和数据一起延, 保证对齐。
 wire        gam_tlast, gam_tuser, gam_tvalid;
 wire [95:0] gam_tdata;
+wire        gpre_tlast, gpre_tuser, gpre_tvalid;
+wire [95:0] gpre_tdata;   // gamma raw output (before radial tint compensation)
 reg [8:0] awb_beat_x;
 reg [95:0] gamma_bypass_d;
 reg gamma_left_d;
@@ -188,6 +190,31 @@ gamma_96 #(
     .I_tdata (awb_demo_tdata ),
     .I_tvalid(awb_O_tvalid),
     .I_bypass(1'b0),        // gamma 打开 —— 实测它对亮度有贡献, 而且不是时序的元凶(无 gamma 的工程时序同样紧)
+    .O_tlast (gpre_tlast ),
+    .O_tuser (gpre_tuser ),
+    .O_tdata (gpre_tdata ),
+    .O_tvalid(gpre_tvalid)
+);
+// ---- 径向色偏补偿 (2026-11-14) ---------------------------------------------
+// 症状: 四周偏红、中间偏绿。AWB 是**全局**增益, 只能把全画面平均值调成中性,
+// 径向梯度一点都动不了 —— 所以增益怎么调, 边缘和中心的相对色偏始终在:
+// 中心偏绿(绿目标过判 / 白墙误判), 四周偏红(绿蓝被压死 / 红过判)。
+// 这里按到画面中心的距离把梯度压平, 平均值仍然交给 AWB 每帧自己重算。
+//
+// 接线原则: gamma 输出改名成 gpre_*, 本模块输出仍然叫 gam_* ——
+// 下游十几处引用 (u_detect / u_boxhold / u_edge / raw_tdata_d / O_tlast /
+// S_mode 采样) 一行都不用动, 它们看到的就是补偿后的画面, 对齐关系也不变
+// (本模块只有 1 拍流水, 所有分支一起延后一拍)。
+radial_tint_96 #(
+    .IMG_WIDTH (1280),
+    .IMG_HEIGHT(720 )
+) u_radial (
+    .I_clk   (axi4s_video_aclk),
+    .I_rst_n (I_rst_n),
+    .I_tlast (gpre_tlast ),
+    .I_tuser (gpre_tuser ),
+    .I_tdata (gpre_tdata ),
+    .I_tvalid(gpre_tvalid),
     .O_tlast (gam_tlast ),
     .O_tuser (gam_tuser ),
     .O_tdata (gam_tdata ),
@@ -234,8 +261,8 @@ color_detect_96 #(
                                  // 亮度门不需要卡这么高。值压低后由相对门限兜噪声。
     .AREA_TH           (300 ),   // **单个连通域**小于 300 像素不报
     .MIN_RUN           (3   ),   // 2026-10-19: 2->3, horizontal erosion for the bbox only
-    .EDGE_MASK_X       (80  ),
-    .EDGE_MASK_Y       (45  ),
+    .EDGE_MASK_X       (32  ),   // 2026-11-14: 80->32。四角盲区每角 3600px2 -> 576px2
+    .EDGE_MASK_Y       (18  ),   // 2026-11-14: 45->18。只挡四角镜头色阴影，不再整块丢掉角落目标
     .NTRK              (4   ),   // 每色同时跟踪的连通域条数 = 每色最多几个框
     // ---- 2026-10-11: "一个物体出来好多框" 的修复 (只改这两个常数) ----------
     // 匹配里只有两个"容差"常数, 它们就是物体被判成"断链了"的阈值:
@@ -853,7 +880,11 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg   [7:0] m;
         begin
-            m = (g >> 2) + (g >> 4);
+            // 2026-11-14: 5/16 -> 3/16。AWB 是灰世界估计, 会把 R/B 增益抬到 sum_g/sum_r,
+            //   专门用来中和"传感器原生偏绿"。绿表面的相对饱和度因此被吃掉, 而红/蓝被抬高后
+            //   相对余量反而变大 —— 所以只放松绿色这一条。R 允许到 G 的 81.25% (原 68.75%)。
+            //   面积不变(还是两次移位一次加), 亮度门与 g>=r && g>=b 主导条件均未改动。
+            m = (g >> 3) + (g >> 4);
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= m) && ((g - b) >= m);
         end
@@ -2623,11 +2654,31 @@ wire k2 = e2 || (w2 && sup2);
 wire k3 = e3 || (w3 && sup3);
 
 // ---------------------------------------------------------------- 显示输出
-// 仍是二值（白边黑底）。门限由上层 I_edge_th 给，当前 60；弱门限自动取一半。
-wire [23:0] o0 = k0 ? 24'hffffff : 24'h000000;
-wire [23:0] o1 = k1 ? 24'hffffff : 24'h000000;
-wire [23:0] o2 = k2 ? 24'hffffff : 24'h000000;
-wire [23:0] o3 = k3 ? 24'hffffff : 24'h000000;
+// 2026-11-14: 改成 8bit 梯度灰度显示, 不再二值化。
+//
+// 原来是 "k ? 白 : 黑"。硬门限不可能同时照顾亮面和暗面 —— 门限低了暗部噪点
+// 满屏, 高了暗处轮廓断线, 这就是之前 I_edge_th 从 68 一路调到 110 始终在
+// "噪点 / 断线" 之间来回的根本原因。
+// 现在把 mag 饱和到 8bit 直接当灰度显示: 强边仍是纯白, 弱边变深灰, 视觉上
+// 连续, 也没有"断线"这种失败模式。I_edge_th 从此只影响 O_strong(卡通描边)。
+// k0..k3 / sup0..3 / w0..3 这套滞回逻辑仍留在源码里(方便回退), 但显示不再
+// 依赖它们, 综合会自动剪掉这些逻辑。
+function [7:0] f_sat8;              // 12bit 梯度 -> 8bit 饱和
+    input [11:0] m;
+    begin
+        f_sat8 = (m[11:8] != 4'd0) ? 8'hff : m[7:0];
+    end
+endfunction
+
+wire [7:0]  gv0 = win_ok ? f_sat8(mag0) : 8'd0;
+wire [7:0]  gv1 = win_ok ? f_sat8(mag1) : 8'd0;
+wire [7:0]  gv2 = win_ok ? f_sat8(mag2) : 8'd0;
+wire [7:0]  gv3 = win_ok ? f_sat8(mag3) : 8'd0;
+
+wire [23:0] o0 = {gv0, gv0, gv0};
+wire [23:0] o1 = {gv1, gv1, gv1};
+wire [23:0] o2 = {gv2, gv2, gv2};
+wire [23:0] o3 = {gv3, gv3, gv3};
 
 always @(posedge I_clk or negedge I_rst_n) begin
     if (!I_rst_n) begin
@@ -3042,3 +3093,167 @@ module motion_detect_96 #(
 
 endmodule
 
+
+// ============================================================================
+// radial_tint_96 —— 径向色偏补偿 (2026-11-14, 第二版: 双向倾斜)
+//
+// 症状演变: 第一版只往一个方向调(只降 R / 只加 G), 把"四周红中间绿"的梯度
+// 压平了, 但平均值跟着偏绿 —— 因为 AWB 在 tint **上游**, 它算的是补偿前的
+// 画面, 看不到 tint 加进去的绿, 永远补不回来。
+//
+// 第二版改成**带符号的双向倾斜**: 中心补红、外围压红, 两边反向, 平均值基本
+// 不变; G 这一路归零, 不再人工加绿(绿靠 R 的相对变化自然回来)。
+//
+//   dx   = x_grp*4 + 2 - IMG_WIDTH/2      (用组中心, 组内 4 像素共享, 误差 <= 3px)
+//   dy   = y_pos - IMG_HEIGHT/2
+//   r2   = dx*dx + dy*dy                  (最大 640^2+360^2 = 529600, 20 bit)
+//   zone = min(r2 >> 15, 15)              (0 = 中心, 15 = 四角)
+//   C'   = C + ((C * s[zone]) >> 6)       s 带符号: + 提升, - 压低
+//
+// s 是 5bit 有符号(-16..+15), 幅度对应 |s|/64 = 0..25%。三通道各一张 16 项表。
+// 中心 4 档为正(补红), 外围 8 档为负(压红) —— 只动径向梯度, 不动平均值。
+// 乘 |s| 用移位加法, 0 DSP (只有 r2 的两次平方会进 DSP, 共 2 个)。
+// 1 拍流水, tlast/tuser/tvalid 与数据一起延。
+// ============================================================================
+module radial_tint_96 #(
+    parameter IMG_WIDTH  = 1280,
+    parameter IMG_HEIGHT = 720
+)(
+    input               I_clk,
+    input               I_rst_n,
+    input               I_tlast,
+    input               I_tuser,
+    input      [95:0]   I_tdata,
+    input               I_tvalid,
+    output reg          O_tlast,
+    output reg          O_tuser,
+    output reg [95:0]   O_tdata,
+    output reg          O_tvalid
+);
+
+    localparam [10:0] CEN_X  = IMG_WIDTH  / 2;
+    localparam [ 9:0] CEN_Y  = IMG_HEIGHT / 2;
+    localparam [ 8:0] X_LAST = (IMG_WIDTH >> 2) - 1;
+
+    // ---------------------------------------------------------------- 位置计数
+    reg [8:0]  x_grp;                       // 0..319
+    reg [9:0]  y_pos;                       // 0..719
+
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            x_grp <= 9'd0;
+            y_pos <= 10'd0;
+        end else if (I_tuser) begin
+            x_grp <= 9'd0;
+            y_pos <= 10'd0;
+        end else if (I_tvalid) begin
+            if (I_tlast || (x_grp == X_LAST)) begin
+                x_grp <= 9'd0;
+                y_pos <= (y_pos == (IMG_HEIGHT-1)) ? 10'd0 : (y_pos + 10'd1);
+            end else begin
+                x_grp <= x_grp + 9'd1;
+            end
+        end
+    end
+
+    // ------------------------------------------------------------ 到中心的距离2
+    wire [10:0] x_pix = {x_grp, 2'b10};                  // x_grp*4 + 2
+    wire [10:0] y_pix = {1'b0, y_pos};
+    wire [10:0] dx_u  = (x_pix > CEN_X) ? (x_pix - CEN_X) : (CEN_X - x_pix);
+    wire [ 9:0] dy_u  = (y_pix > CEN_Y) ? (y_pix - CEN_Y) : (CEN_Y - y_pix);
+    wire [20:0] dx2   = dx_u * dx_u;
+    wire [19:0] dy2   = dy_u * dy_u;
+    wire [21:0] r2    = dx2 + dy2;
+
+    wire [5:0]  z6    = r2 >> 15;
+    wire [3:0]  zone  = (z6 > 6'd15) ? 4'd15 : z6[3:0];
+
+    // ---------------------------------------------------------------- 系数表
+    // 单位: 1/64 = 1.56%。正 = 提升该通道, 负 = 压低。
+    // 调参只改这四个数: 中心想更红就加, 四周还想更淡就减。
+    function signed [4:0] f_sr;             // R: 中心 +2, 外围 -4
+        input [3:0] z;
+        begin
+            case (z)
+                4'd0,4'd1,4'd2,4'd3     : f_sr =  5'sd2;
+                4'd4,4'd5,4'd6,4'd7     : f_sr =  5'sd1;
+                4'd8,4'd9,4'd10,4'd11   : f_sr = -5'sd2;
+                default                 : f_sr = -5'sd4;
+            endcase
+        end
+    endfunction
+
+    function signed [4:0] f_sg;             // G: 全零 —— 不再人工加绿
+        input [3:0] z;
+        begin
+            case (z)
+                4'd0,4'd1,4'd2,4'd3     : f_sg = 5'sd0;
+                4'd4,4'd5,4'd6,4'd7     : f_sg = 5'sd0;
+                4'd8,4'd9,4'd10,4'd11   : f_sg = 5'sd0;
+                default                 : f_sg = 5'sd0;
+            endcase
+        end
+    endfunction
+
+    function signed [4:0] f_sb;             // B: 中心 +1, 外围 -3
+        input [3:0] z;
+        begin
+            case (z)
+                4'd0,4'd1,4'd2,4'd3     : f_sb =  5'sd1;
+                4'd4,4'd5,4'd6,4'd7     : f_sb =  5'sd0;
+                4'd8,4'd9,4'd10,4'd11   : f_sb = -5'sd2;
+                default                 : f_sb = -5'sd3;
+            endcase
+        end
+    endfunction
+
+    wire signed [4:0] s_r = f_sr(zone);
+    wire signed [4:0] s_g = f_sg(zone);
+    wire signed [4:0] s_b = f_sb(zone);
+
+    // c ± c*|s|/64; 加法侧饱和到 255, 减法侧 |s|<=15 时不会下溢
+    function [7:0] f_adj;
+        input [7:0]         c;
+        input signed [4:0]  s;
+        reg   [ 4:0]        m;
+        reg   [11:0]        p;
+        reg   [ 8:0]        t;
+        begin
+            m = s[4] ? (5'd0 - s) : s;
+            p = c * m;
+            if (s[4]) begin
+                f_adj = c - p[11:6];
+            end else begin
+                t     = {1'b0, c} + {3'd0, p[11:6]};
+                f_adj = t[8] ? 8'hFF : t[7:0];
+            end
+        end
+    endfunction
+
+    // ---------------------------------------------------------------- 4 像素并行
+    wire [23:0] ip0 = I_tdata[95:72];
+    wire [23:0] ip1 = I_tdata[71:48];
+    wire [23:0] ip2 = I_tdata[47:24];
+    wire [23:0] ip3 = I_tdata[23: 0];
+
+    wire [23:0] op0 = { f_adj(ip0[23:16],s_r), f_adj(ip0[15:8],s_g), f_adj(ip0[7:0],s_b) };
+    wire [23:0] op1 = { f_adj(ip1[23:16],s_r), f_adj(ip1[15:8],s_g), f_adj(ip1[7:0],s_b) };
+    wire [23:0] op2 = { f_adj(ip2[23:16],s_r), f_adj(ip2[15:8],s_g), f_adj(ip2[7:0],s_b) };
+    wire [23:0] op3 = { f_adj(ip3[23:16],s_r), f_adj(ip3[15:8],s_g), f_adj(ip3[7:0],s_b) };
+
+    // ---------------------------------------------------------------- 1 拍流水
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            O_tdata  <= 96'd0;
+            O_tuser  <= 1'b0;
+            O_tvalid <= 1'b0;
+            O_tlast  <= 1'b0;
+        end else begin
+            O_tdata  <= {op0, op1, op2, op3};
+            O_tuser  <= I_tuser;
+            O_tvalid <= I_tvalid;
+            O_tlast  <= I_tlast;
+        end
+    end
+
+endmodule

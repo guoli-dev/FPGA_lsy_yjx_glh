@@ -1455,40 +1455,38 @@ module hdmi_mixer #(
     wire [11:0] C_logo_y    = S_y - LOGO_Y;
     wire [14:0] C_logo_addr = (C_logo_y << 7) + (C_logo_y << 5) + C_logo_x;
 
-    // ---- 第 1 级: 在不在 Logo 区内 + ROM 地址 ----
+    // ---- 第 1/2 级: 是否在 Logo 区内 (地址直接送同步 ROM) ----
+    // 2026-11-14: 换成 banked 同步 ROM (地址 -> 像素正好 2 拍)。
+    //
+    // 原来 ROM 是组合逻辑: "地址加法器 + 160x160 组合 mux 树" 串在同一拍里,
+    // 上面 2026-10-11 的记录实测那条路径要 ~13ns, 而 75MHz 只有 13.33ns ——
+    // 时序余量几乎为零。现在地址组合进 ROM, 由 ROM 内部打两拍, 这条长路径
+    // 直接消失; C_logo_pixel 与 S_x_2d 同拍, 区内标志同样延两拍对齐。
     reg        R1_logo_in;
-    reg [14:0] R1_logo_addr;
+    reg        R2_logo_in;
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
-            R1_logo_in   <= 1'b0;
-            R1_logo_addr <= 15'd0;
+            R1_logo_in <= 1'b0;
+            R2_logo_in <= 1'b0;
         end else begin
-            // I_logo_en 也在这里并进去 —— 按键"一键清屏"要图标和文字一起消失
-            R1_logo_in   <= I_logo_en && C_logo_in;
-            R1_logo_addr <= C_logo_addr;
+            // I_logo_en 在这里就并进去 —— 按键"一键清屏"要图标和文字一起消失
+            R1_logo_in <= I_logo_en && C_logo_in;
+            R2_logo_in <= R1_logo_in;
         end
     end
 
-    // ---- 第 2 级: ROM 读出 ----
+    // ---- 第 2 级: 同步 ROM 读出 (2 拍) ----
     wire [24:0] C_logo_pixel;
     anlogic_logo_rom u_anlogic_logo_rom(
-        .I_addr  ( R1_logo_addr  ),
-        .O_pixel ( C_logo_pixel  )
+        .I_clk   ( I_clk        ),
+        .I_addr  ( C_logo_addr  ),
+        .O_pixel ( C_logo_pixel )
     );
 
-    reg        S_logo_on_r;      // 本像素要不要画 Logo
-    reg [23:0] S_logo_col_r;     // Logo 像素颜色
-
-    always @(posedge I_clk or negedge I_rst_n) begin
-        if(!I_rst_n) begin
-            S_logo_on_r  <= 1'b0;
-            S_logo_col_r <= 24'd0;
-        end else begin
-            S_logo_on_r  <= R1_logo_in && C_logo_pixel[24];
-            S_logo_col_r <= C_logo_pixel[23:0];
-        end
-    end
+    // 与 S_x_2d 同拍, 直接送进 2d 级的优先级判断 (那里是组合块, 不再多打一拍)
+    wire        S_logo_on  = R2_logo_in && C_logo_pixel[24];
+    wire [23:0] S_logo_col = C_logo_pixel[23:0];
 
     osd_char_lib u_osd_char_lib(
         .I_char     ( S_pf_char     ),
@@ -1640,10 +1638,10 @@ module hdmi_mixer #(
             // 2026-10-11: Logo ROM 已经挪到 1d 级并寄存 (见上面 u_anlogic_logo_rom
             // 那段)。这里只把寄存好的结果并进 OSD —— 不再做坐标比较、地址计算和
             // ROM 读, 所以这条不再是 O_hdmi_data 的锥 (原来它是 16 级里最尾的 4 级)。
-            // I_logo_en 的门控也已经并进 S_logo_on_r 里了。
-            if(S_logo_on_r) begin
+            // I_logo_en 的门控也已经并进 S_logo_on 里了。
+            if(S_logo_on) begin
                 S_osd_hit   = 1'b1;
-                S_osd_color = S_logo_col_r;
+                S_osd_color = S_logo_col;
             end
 
             // 2026-10-10: DYN_OSD 文字也受 I_logo_en 门控 —— 按键要"一键清屏"

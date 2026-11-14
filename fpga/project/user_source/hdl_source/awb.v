@@ -327,41 +327,88 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
                            ????                                       
 *****************************************************************/
 
-  wire [47:0] S_div_quotient;
-  wire        S_div_done;
-  reg         S_div_sel;
-  reg  [49:0] S_div_sel_pipe;
+  /*****************************************************************
+        顺序除法 (2026-11-14): 每帧只做两次 R/B 除法
+    原来是一个 IP 全流水除法器, 每个有效像素都 start 一次
+    (320*720*60 约 1380 万次/秒), 但结果只在消隐期取用 —— 每帧就两次。
+    它占 2171 LUT / 2798 FF / 12 DSP, 是全芯片 LUT 的 10.9%。
+    现在改成顺序移位减法除法器: 每次 49 拍, 两次共 98 拍, 每帧跑一遍。
+    商的定义完全不变: q = floor((sum_g<<16) / sum_r_or_b), 超 20 bit 饱和。
+  *****************************************************************/
+  reg  [47:0] S_num_g_snap;     // sum_g<<16 的帧首快照 (两个通道共用)
+  reg  [31:0] S_den_b_snap;     // sum_b 的帧首快照 (R 做完才轮到 B, 必须先存)
+  reg  [47:0] S_div_num;        // 被除数移位寄存器
+  reg  [31:0] S_div_den;        // 除数
+  reg  [32:0] S_div_rem;        // 余数 (den <= 2^32-1, 33 bit 足够)
+  reg  [47:0] S_div_q;          // 商
+  reg  [5:0]  S_div_cnt;        // 0..48
+  reg         S_div_ch;         // 0: 正在算 R, 1: 正在算 B
+  reg         S_div_busy;
+  reg  [47:0] S_q_r_hold;       // R 通道结果
+  reg  [47:0] S_q_b_hold;       // B 通道结果
+  reg  [1:0]  S_q_valid;        // 两个通道各自完成标志, 帧首清零
 
-  // The generated divider accepts one request per clock and has an exact
-  // 50-cycle start-to-done pipeline. Alternate R and B requests so one IP
-  // replaces two identical dividers without changing either division formula.
+  wire [32:0] S_rem_shift = {S_div_rem[31:0], S_div_num[47]};
+  wire        S_rem_ge    = (S_rem_shift >= {1'b0, S_div_den});
+
   always @(posedge I_clk or negedge I_rst_n) begin
       if (!I_rst_n) begin
-          S_div_sel      <= 1'b0;
-          S_div_sel_pipe <= 50'd0;
+          S_num_g_snap <= 48'd0;
+          S_den_b_snap <= 32'd1;
+          S_div_num    <= 48'd0;
+          S_div_den    <= 32'd1;
+          S_div_rem    <= 33'd0;
+          S_div_q      <= 48'd0;
+          S_div_cnt    <= 6'd0;
+          S_div_ch     <= 1'b0;
+          S_div_busy   <= 1'b0;
+          S_q_r_hold   <= 48'd0;
+          S_q_b_hold   <= 48'd0;
+          S_q_valid    <= 2'b00;
+      end else if (!S_div_busy) begin
+          // 帧首: 此刻 sum_* 还是上一整帧的最终值 (同一拍才被复位成 1),
+          // 正好取它做快照并启动 R 通道。
+          // S_q_valid 在这里清零, 但 gain 逻辑同一拍读到的是清零前的旧值, 不会丢结果。
+          if (I_tuser) begin
+              S_q_valid    <= 2'b00;
+              S_num_g_snap <= {sum_g[0], 16'd0};
+              S_den_b_snap <= sum_b[0];
+              S_div_ch     <= 1'b0;
+              S_div_num    <= {sum_g[0], 16'd0};
+              S_div_den    <= sum_r[0];
+              S_div_rem    <= 33'd0;
+              S_div_q      <= 48'd0;
+              S_div_cnt    <= 6'd0;
+              S_div_busy   <= 1'b1;
+          end
+      end else if (S_div_cnt == 6'd48) begin
+          // 一个通道做完: 收商, 接着做 B; B 做完就收工等下一个帧首
+          if (!S_div_ch) begin
+              S_q_r_hold <= S_div_q;
+              S_q_valid  <= {S_q_valid[1], 1'b1};
+              S_div_ch   <= 1'b1;
+              S_div_num  <= S_num_g_snap;
+              S_div_den  <= S_den_b_snap;
+              S_div_rem  <= 33'd0;
+              S_div_q    <= 48'd0;
+              S_div_cnt  <= 6'd0;
+          end else begin
+              S_q_b_hold <= S_div_q;
+              S_q_valid  <= {1'b1, S_q_valid[0]};
+              S_div_busy <= 1'b0;
+          end
       end else begin
-          S_div_sel_pipe <= {S_div_sel_pipe[48:0], S_div_sel};
-          if (I_tvalid_r1)
-              S_div_sel <= ~S_div_sel;
+          S_div_num <= {S_div_num[46:0], 1'b0};
+          S_div_cnt <= S_div_cnt + 6'd1;
+          if (S_rem_ge) begin
+              S_div_rem <= S_rem_shift - {1'b0, S_div_den};
+              S_div_q   <= {S_div_q[46:0], 1'b1};
+          end else begin
+              S_div_rem <= S_rem_shift;
+              S_div_q   <= {S_div_q[46:0], 1'b0};
+          end
       end
   end
-
-
-
-/*****************************************************************
-                   IP ??                                    
-*****************************************************************/
-    //??????????????????
-
-      divider div_gen_G_RB_r1 (
-          .clk(I_clk),  // input wire aclk
-          .rst(!I_rst_n),
-          .start(I_tvalid_r1),
-          .denominator(S_div_sel ? sum_b[0] : sum_r[0]),
-          .numerator({sum_g[0],16'd0}),  // input wire [47 : 0] s_axis_dividend_tdata
-          .quotient(S_div_quotient),
-          .done(S_div_done)
-      );
 
      
     signal_delay #(
@@ -404,17 +451,22 @@ assign  rgb888_b_d0[0] = I_tdata_d0[0+:8];
             in_r_r1 <= 20'h10000;
             in_b_r1 <= 20'h10000;
         end
-        else if(S_div_done && !I_tvalid_r1)begin
-            if(!S_div_sel_pipe[49]) begin
-                if(|S_div_quotient[47:20])
+        // 2026-11-14: 顺序除法改造后, 两次除法在"帧首启动、当帧第一行之前"就算完,
+        // 所以统一在帧首 (I_tuser) 一次性更新增益 —— 整帧恒定, 与原来那版的意图一致。
+        // 用的是上一帧首启动的那两次除法的结果 (S_q_*_hold), 数值定义不变:
+        //   q = floor((sum_g<<16) / sum_r_or_b), 超 20 bit 饱和成 0xFFFFF。
+        else if(I_tuser)begin
+            if(S_q_valid[0])begin
+                if(|S_q_r_hold[47:20])
                     in_r_r1 <= 20'hfffff;
                 else
-                    in_r_r1 <= S_div_quotient[19:0];
-            end else begin
-                if(|S_div_quotient[47:20])
+                    in_r_r1 <= S_q_r_hold[19:0];
+            end
+            if(S_q_valid[1])begin
+                if(|S_q_b_hold[47:20])
                     in_b_r1 <= 20'hfffff;
                 else
-                    in_b_r1 <= S_div_quotient[19:0];
+                    in_b_r1 <= S_q_b_hold[19:0];
             end
         end
     end
