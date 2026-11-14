@@ -94,6 +94,8 @@ data128_96 u_data128_96 (
 // AE observes pre-AWB, pre-gamma pixels without modifying the video stream.
 // 2026-11-13: AE 帧均值（第一步，只测量，不闭环）
 wire [15:0] S_ae_frame_sum;
+wire        rct_tlast, rct_tuser, rct_tvalid;   // radial-tint output, feeds AWB
+wire [95:0] rct_tdata;
 
 aec_stats_96 u_aec_stats (
     .I_clk          (axi4s_video_aclk),
@@ -136,10 +138,10 @@ awb #(
     .I_wb_r_trim  (20'h10000),   // 1.0 —— 三个 trim 全中性, 交给 AWB 自己定增益
     .I_wb_g_trim  (20'h10000),
     .I_wb_b_trim  (20'h10000),
-    .I_tlast (m_aixs_tlast),
-    .I_tuser (m_aixs_tuser),
-    .I_tdata (m_aixs_tdata_96),
-    .I_tvalid(m_aixs_tvalid),
+    .I_tlast (rct_tlast),
+    .I_tuser (rct_tuser),
+    .I_tdata (rct_tdata),
+    .I_tvalid(rct_tvalid),
     .I_tready(m_aixs_tready),
     .O_tlast (awb_O_tlast ),
     .O_tuser (awb_O_tuser ),
@@ -155,8 +157,6 @@ awb #(
 // 带一级流水, tlast/tuser/tvalid 和数据一起延, 保证对齐。
 wire        gam_tlast, gam_tuser, gam_tvalid;
 wire [95:0] gam_tdata;
-wire        gpre_tlast, gpre_tuser, gpre_tvalid;
-wire [95:0] gpre_tdata;   // gamma raw output (before radial tint compensation)
 reg [8:0] awb_beat_x;
 reg [95:0] gamma_bypass_d;
 reg gamma_left_d;
@@ -190,10 +190,10 @@ gamma_96 #(
     .I_tdata (awb_demo_tdata ),
     .I_tvalid(awb_O_tvalid),
     .I_bypass(1'b0),        // gamma 打开 —— 实测它对亮度有贡献, 而且不是时序的元凶(无 gamma 的工程时序同样紧)
-    .O_tlast (gpre_tlast ),
-    .O_tuser (gpre_tuser ),
-    .O_tdata (gpre_tdata ),
-    .O_tvalid(gpre_tvalid)
+    .O_tlast (gam_tlast ),
+    .O_tuser (gam_tuser ),
+    .O_tdata (gam_tdata ),
+    .O_tvalid(gam_tvalid)
 );
 // ---- 径向色偏补偿 (2026-11-14) ---------------------------------------------
 // 症状: 四周偏红、中间偏绿。AWB 是**全局**增益, 只能把全画面平均值调成中性,
@@ -201,24 +201,24 @@ gamma_96 #(
 // 中心偏绿(绿目标过判 / 白墙误判), 四周偏红(绿蓝被压死 / 红过判)。
 // 这里按到画面中心的距离把梯度压平, 平均值仍然交给 AWB 每帧自己重算。
 //
-// 接线原则: gamma 输出改名成 gpre_*, 本模块输出仍然叫 gam_* ——
+// 接线原则: gamma 输出改名成 gam_*, 本模块输出仍然叫 gam_* ——
 // 下游十几处引用 (u_detect / u_boxhold / u_edge / raw_tdata_d / O_tlast /
 // S_mode 采样) 一行都不用动, 它们看到的就是补偿后的画面, 对齐关系也不变
 // (本模块只有 1 拍流水, 所有分支一起延后一拍)。
 radial_tint_96 #(
     .IMG_WIDTH (1280),
     .IMG_HEIGHT(720 )
-) u_radial (
+) u_radial (   // 2026-11-14: MOVED before AWB so AWB closes the global mean
     .I_clk   (axi4s_video_aclk),
     .I_rst_n (I_rst_n),
-    .I_tlast (gpre_tlast ),
-    .I_tuser (gpre_tuser ),
-    .I_tdata (gpre_tdata ),
-    .I_tvalid(gpre_tvalid),
-    .O_tlast (gam_tlast ),
-    .O_tuser (gam_tuser ),
-    .O_tdata (gam_tdata ),
-    .O_tvalid(gam_tvalid)
+    .I_tlast (m_aixs_tlast ),
+    .I_tuser (m_aixs_tuser ),
+    .I_tdata (m_aixs_tdata_96 ),
+    .I_tvalid(m_aixs_tvalid),
+    .O_tlast (rct_tlast ),
+    .O_tuser (rct_tuser ),
+    .O_tdata (rct_tdata ),
+    .O_tvalid(rct_tvalid)
 );
 
 // ---- 色块识别 + 画框 (2026-10-07) -------------------------------------------
@@ -3163,7 +3163,7 @@ module radial_tint_96 #(
     wire [ 9:0] dy_u  = (y_pix > CEN_Y) ? (y_pix - CEN_Y) : (CEN_Y - y_pix);
     wire [20:0] dx2   = dx_u * dx_u;
     wire [19:0] dy2   = dy_u * dy_u;
-    wire [21:0] r2    = dx2 + dy2;
+    wire [22:0] r2    = {2'b0, dx2} + {3'b0, dy2} + {2'b0, dy2, 1'b0};   // 2026-11-14: dx2 + 3*dy2 = 16:9 ellipse (no extra multiplier)
 
     wire [5:0]  z6    = r2 >> 15;
     wire [3:0]  zone  = (z6 > 6'd15) ? 4'd15 : z6[3:0];
@@ -3171,14 +3171,14 @@ module radial_tint_96 #(
     // ---------------------------------------------------------------- 系数表
     // 单位: 1/64 = 1.56%。正 = 提升该通道, 负 = 压低。
     // 调参只改这四个数: 中心想更红就加, 四周还想更淡就减。
-    function signed [4:0] f_sr;             // R: 中心 +2, 外围 -4
+    function signed [4:0] f_sr;             // bipolar ramp; radius metric = dx^2 + 3*dy^2 (16:9 ellipse)
         input [3:0] z;
         begin
             case (z)
-                4'd0,4'd1,4'd2,4'd3     : f_sr =  5'sd2;
+                4'd0,4'd1,4'd2,4'd3     : f_sr =  5'sd3;
                 4'd4,4'd5,4'd6,4'd7     : f_sr =  5'sd1;
-                4'd8,4'd9,4'd10,4'd11   : f_sr = -5'sd2;
-                default                 : f_sr = -5'sd4;
+                4'd8,4'd9,4'd10,4'd11   : f_sr = -5'sd5;
+                default                 : f_sr = -5'sd8;
             endcase
         end
     endfunction
@@ -3195,14 +3195,14 @@ module radial_tint_96 #(
         end
     endfunction
 
-    function signed [4:0] f_sb;             // B: 中心 +1, 外围 -3
+    function signed [4:0] f_sb;             // bipolar ramp; radius metric = dx^2 + 3*dy^2 (16:9 ellipse)
         input [3:0] z;
         begin
             case (z)
                 4'd0,4'd1,4'd2,4'd3     : f_sb =  5'sd1;
                 4'd4,4'd5,4'd6,4'd7     : f_sb =  5'sd0;
-                4'd8,4'd9,4'd10,4'd11   : f_sb = -5'sd2;
-                default                 : f_sb = -5'sd3;
+                4'd8,4'd9,4'd10,4'd11   : f_sb = -5'sd3;
+                default                 : f_sb = -5'sd5;
             endcase
         end
     endfunction
