@@ -554,13 +554,9 @@ module gamma_96 #(
                 x = {1'b0, (v - 9'd64)};
                 t = 10'd112 + x + (x >> 2);                             // x1.25
             end
-            else if (v < 9'd192) begin
-                x = {1'b0, (v - 9'd128)};
-                t = 10'd192 + (((x << 1) + x) >> 2);                     // x0.75
-            end
             else begin
-                x = {1'b0, (v - 9'd192)};
-                t = 10'd240 + (x >> 2);                                 // x0.25
+                x = {1'b0, (v - 9'd128)};
+                t = 10'd192 + (x >> 1);                                 // x0.5 uniform above 128 -> highlights keep gradation
             end
             gam8 = (t > 10'd255) ? 8'hff : t[7:0];
         end
@@ -937,7 +933,13 @@ module color_detect_96 #(
             hr1 <= 1'b0; hr2 <= 1'b0;
             hg1 <= 1'b0; hg2 <= 1'b0;
             hb1 <= 1'b0; hb2 <= 1'b0;
-        end else if (I_tvalid) begin
+        end else if (!I_tvalid) begin
+            // line gap: clear, otherwise the first pixels of every line
+            // mix in the tail of the previous line (stale median window)
+            hr1 <= 1'b0; hr2 <= 1'b0;
+            hg1 <= 1'b0; hg2 <= 1'b0;
+            hb1 <= 1'b0; hb2 <= 1'b0;
+        end else begin
             hr1 <= hr;  hr2 <= hr1;
             hg1 <= hg;  hg2 <= hg1;
             hb1 <= hb;  hb2 <= hb1;
@@ -3165,44 +3167,56 @@ module radial_tint_96 #(
     wire [19:0] dy2   = dy_u * dy_u;
     wire [22:0] r2    = {2'b0, dx2} + {3'b0, dy2} + {2'b0, dy2, 1'b0};   // 2026-11-14: dx2 + 3*dy2 = 16:9 ellipse (no extra multiplier)
 
-    wire [5:0]  z6    = r2 >> 15;
-    wire [3:0]  zone  = (z6 > 6'd15) ? 4'd15 : z6[3:0];
+    wire [5:0]  z6    = r2 >> 16;   // 8-step table: corners land on zone 12, no saturation at 15
+    wire [3:0]  zone  = z6[3:0];      // max 12, clamp not needed
 
     // ---------------------------------------------------------------- 系数表
     // 单位: 1/64 = 1.56%。正 = 提升该通道, 负 = 压低。
     // 调参只改这四个数: 中心想更红就加, 四周还想更淡就减。
-    function signed [4:0] f_sr;             // bipolar ramp; radius metric = dx^2 + 3*dy^2 (16:9 ellipse)
+    function signed [4:0] f_sr;             // R: 8-step inward ramp, centre = 0
         input [3:0] z;
         begin
             case (z)
-                4'd0,4'd1,4'd2,4'd3     : f_sr =  5'sd3;
-                4'd4,4'd5,4'd6,4'd7     : f_sr =  5'sd1;
-                4'd8,4'd9,4'd10,4'd11   : f_sr = -5'sd5;
-                default                 : f_sr = -5'sd8;
+                4'd0,4'd1            : f_sr = 5'sd0;
+                4'd2,4'd3            : f_sr = -5'sd1;
+                4'd4,4'd5            : f_sr = -5'sd2;
+                4'd6,4'd7            : f_sr = -5'sd3;
+                4'd8,4'd9            : f_sr = -5'sd4;
+                4'd10,4'd11          : f_sr = -5'sd5;
+                4'd12,4'd13          : f_sr = -5'sd6;
+                default              : f_sr = -5'sd7;
             endcase
         end
     endfunction
 
-    function signed [4:0] f_sg;             // G: 全零 —— 不再人工加绿
+    function signed [4:0] f_sg;             // G: all zero, AWB downstream owns the mean
         input [3:0] z;
         begin
             case (z)
-                4'd0,4'd1,4'd2,4'd3     : f_sg = 5'sd0;
-                4'd4,4'd5,4'd6,4'd7     : f_sg = 5'sd0;
-                4'd8,4'd9,4'd10,4'd11   : f_sg = 5'sd0;
-                default                 : f_sg = 5'sd0;
+                4'd0,4'd1            : f_sg = 5'sd0;
+                4'd2,4'd3            : f_sg = 5'sd0;
+                4'd4,4'd5            : f_sg = 5'sd0;
+                4'd6,4'd7            : f_sg = 5'sd0;
+                4'd8,4'd9            : f_sg = 5'sd0;
+                4'd10,4'd11          : f_sg = 5'sd0;
+                4'd12,4'd13          : f_sg = 5'sd0;
+                default              : f_sg = 5'sd0;
             endcase
         end
     endfunction
 
-    function signed [4:0] f_sb;             // bipolar ramp; radius metric = dx^2 + 3*dy^2 (16:9 ellipse)
+    function signed [4:0] f_sb;             // B: half of the R ramp
         input [3:0] z;
         begin
             case (z)
-                4'd0,4'd1,4'd2,4'd3     : f_sb =  5'sd1;
-                4'd4,4'd5,4'd6,4'd7     : f_sb =  5'sd0;
-                4'd8,4'd9,4'd10,4'd11   : f_sb = -5'sd3;
-                default                 : f_sb = -5'sd5;
+                4'd0,4'd1            : f_sb = 5'sd0;
+                4'd2,4'd3            : f_sb = 5'sd0;
+                4'd4,4'd5            : f_sb = -5'sd1;
+                4'd6,4'd7            : f_sb = -5'sd1;
+                4'd8,4'd9            : f_sb = -5'sd2;
+                4'd10,4'd11          : f_sb = -5'sd2;
+                4'd12,4'd13          : f_sb = -5'sd3;
+                default              : f_sb = -5'sd3;
             endcase
         end
     endfunction
