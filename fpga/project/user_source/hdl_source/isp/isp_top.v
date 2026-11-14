@@ -999,17 +999,17 @@ module color_detect_96 #(
         ov2 <= ln2[vx];
         if (I_tvalid) begin
             ln2[vx] <= ln1[vx];             // read-before-write gives the old value
-            ln1[vx] <= {hg_m, hr_m, hb_m};
+            ln1[vx] <= {hg_m, hr_m, hb_m};   // bit2=g  bit1=r  bit0=b  (keep in sync with hr_v/hg_v/hb_v)
         end
     end
 
     reg [2:0] cur_d;
-    always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m};
+    always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m};    // same packing as ln1
 
     // median of three = at least two true
     wire hr_v = (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]);
-    wire hg_v = (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0]);
-    wire hb_v = (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]);
+    wire hg_v = (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]);
+    wire hb_v = (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0]);
 
     wire [3:0] hit_r_r = {4{hr_v}};
     wire [3:0] hit_g_r = {4{hg_v}};
