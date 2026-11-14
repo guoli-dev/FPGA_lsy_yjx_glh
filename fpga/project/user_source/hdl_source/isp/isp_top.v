@@ -395,8 +395,30 @@ cartoon_effect_96 #(
 // 显示模式选择: 0=原图  1=边缘  2=卡通化  3=跟踪(原图+画框)
 // (2 原来是 SEG 分割模式的占位, 一直回落到原图; 2026-10-10 改成卡通化,
 //  直接补上基础扩展要求(1) 的"区域填充"。)
-wire [95:0] S_mux_tdata = (S_mode == 2'd1) ? edge_tdata    :
-                          (S_mode == 2'd2) ? cartoon_tdata : raw_tdata_d;
+wire [95:0] cls_tdata;
+wire        cls_tuser, cls_tvalid;
+
+// mode 7 = colour classification debug: hit pixels are tinted
+//   magenta = judged blue, yellow = judged green, cyan = judged red
+// the criteria inside are identical to color_detect_96 so this view is exact
+classify_overlay_96 #(
+    .COLOR_MARGIN_SHIFT(2 ),
+    .MIN_BRIGHT       (45)
+) u_classify (
+    .I_clk   (axi4s_video_aclk),
+    .I_rst_n (I_rst_n),
+    .I_bypass(1'b0),
+    .I_tuser (gam_tuser ),
+    .I_tvalid(gam_tvalid),
+    .I_tdata (gam_tdata ),
+    .O_tuser (cls_tuser ),
+    .O_tvalid(cls_tvalid),
+    .O_tdata (cls_tdata )
+);
+
+wire [95:0] S_mux_tdata = (S_mode == 3'd1) ? edge_tdata    :
+                          (S_mode == 3'd2) ? cartoon_tdata :
+                          (S_mode == 3'd7) ? cls_tdata     : raw_tdata_d;
 
 always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
     if (!I_rst_n) begin
@@ -554,9 +576,13 @@ module gamma_96 #(
                 x = {1'b0, (v - 9'd64)};
                 t = 10'd112 + x + (x >> 2);                             // x1.25
             end
-            else begin
+            else if (v < 9'd192) begin
                 x = {1'b0, (v - 9'd128)};
-                t = 10'd192 + (x >> 1);                                 // x0.5 uniform above 128 -> highlights keep gradation
+                t = 10'd192 + (((x << 1) + x) >> 2);                     // x0.75
+            end
+            else begin
+                x = {1'b0, (v - 9'd192)};
+                t = 10'd240 + (x >> 2);                                 // x0.25
             end
             gam8 = (t > 10'd255) ? 8'hff : t[7:0];
         end
@@ -933,13 +959,7 @@ module color_detect_96 #(
             hr1 <= 1'b0; hr2 <= 1'b0;
             hg1 <= 1'b0; hg2 <= 1'b0;
             hb1 <= 1'b0; hb2 <= 1'b0;
-        end else if (!I_tvalid) begin
-            // line gap: clear, otherwise the first pixels of every line
-            // mix in the tail of the previous line (stale median window)
-            hr1 <= 1'b0; hr2 <= 1'b0;
-            hg1 <= 1'b0; hg2 <= 1'b0;
-            hb1 <= 1'b0; hb2 <= 1'b0;
-        end else begin
+        end else if (I_tvalid) begin
             hr1 <= hr;  hr2 <= hr1;
             hg1 <= hg;  hg2 <= hg1;
             hb1 <= hb;  hb2 <= hb1;
@@ -1598,10 +1618,12 @@ module classify_overlay_96 #(
     endfunction
     function is_green;
         input [7:0] r, g, b;
+        reg [7:0] g_m;
         begin
+            // must match color_detect_96 exactly, otherwise this debug view lies
+            g_m = (g >> 3) + (g >> 4);          // 3/16 = 18.75%
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
-                       ((g - r) >= (g >> COLOR_MARGIN_SHIFT)) &&
-                       ((g - b) >= (g >> COLOR_MARGIN_SHIFT));
+                       ((g - r) >= g_m) && ((g - b) >= g_m);
         end
     endfunction
     function is_blue;
@@ -3212,7 +3234,7 @@ module radial_tint_96 #(
     wire [19:0] dy2   = dy_u * dy_u;
     wire [22:0] r2    = {2'b0, dx2} + {3'b0, dy2} + {2'b0, dy2, 1'b0};   // 2026-11-14: dx2 + 3*dy2 = 16:9 ellipse (no extra multiplier)
 
-    wire [5:0]  z6    = r2 >> 16;   // 8-step table: corners land on zone 12, no saturation at 15
+    wire [5:0]  z6    = r2 >> 16;   // 8-step table: corners land on zone 12
     wire [3:0]  zone  = z6[3:0];      // max 12, clamp not needed
 
     // ---------------------------------------------------------------- 系数表
