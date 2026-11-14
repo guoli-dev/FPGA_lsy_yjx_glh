@@ -767,7 +767,7 @@ assign S_det_boxes_hdmi = S_det_sync;
 //
 // 协议 (每帧 8 字节, 60Hz, 115200 8N1):
 //   [0] 0xAA        帧头
-//   [1] 模式动作    bit0=模式(0跟随/1色卡), bit2:1=动作(00停/01进/10返)
+//   [1] 模式颜色    bit0=模式(0跟随/1色卡), bit2:1=稳定颜色(0无/多 1红 2绿 3蓝)
 //   [2] 红 偏差     有符号: (红cx-640)>>3, 0=居中 负=偏左 正=偏右; 0x80=本帧无红
 //   [3] 红 宽度     (right-left)>>3, 小=远 大=近
 //   [4] 绿 偏差   [5] 绿 宽度
@@ -885,12 +885,9 @@ status_seg8 u_status_seg8 (
     .O_seg_dig     (O_seg_dig)
 );
 
-// Byte 1: bit0=car mode (0=follow, 1=card); bit2:1=action (00=stop, 01=go, 10=back).
-// Card-command mapping: red=stop, green=go, blue=back. Follow mode sends 0x00.
-wire [1:0] S_action = (S_stable_color == 2'd2) ? 2'd1 :   // green -> forward
-                       (S_stable_color == 2'd3) ? 2'd2 :   // blue  -> back
-                                                  2'd0;    // red/none -> stop
-wire [7:0] S_mode_action = S_card_mode ? {5'd0, S_action, 1'b1} : 8'h00;
+// Byte 1: bit0=car mode (0=follow, 1=card); bit2:1=stable color (0=none/multi, 1=red, 2=green, 3=blue).
+// The car decodes color->action (red=fwd, green=back, blue=rotate). Follow mode sends 0x00.
+wire [7:0] S_mode_action = S_card_mode ? {5'd0, S_stable_color, 1'b1} : 8'h00;
 
 // Packet order: AA, mode/action, red dev/width, green dev/width, blue dev/width.
 wire [63:0] S_car_pkt = {

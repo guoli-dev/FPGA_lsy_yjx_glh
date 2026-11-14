@@ -6,11 +6,12 @@
 /*
  * 色块追踪（FPGA/无线 -> 小车，接收口见下方 COLOR_TRACK_RX_PORT）
  *
- * 协议: 每帧 7 字节, 60Hz
- *   AA | 红dev | 红宽 | 绿dev | 绿宽 | 蓝dev | 蓝宽
+ * 协议: 每帧 8 字节, 60Hz
+ *   AA | 模式颜色 | 红dev | 红宽 | 绿dev | 绿宽 | 蓝dev | 蓝宽
+ *   模式颜色: bit0=模式(0=色块跟随, 1=色卡指令), bit2:1=稳定颜色(0无/多 1红 2绿 3蓝)
  *   dev 有符号: 0x80=无目标, 0x00=正中, 0x01~0x4F 偏右, 0xB0~0xFF 偏左
  *   wid 宽度:   0 ~ 159
- * 0xAA 不会出现在 6 个数据字节里(dev 的合法值域跳过了 0xAA, wid<=0x9F),
+ * 0xAA 不会出现在 7 个数据字节里(dev 的合法值域跳过了 0xAA, wid<=0x9F),
  * 所以不需要校验和/帧尾, 只靠 0xAA 对齐即可。
  */
 
@@ -82,6 +83,16 @@
 
 #define COLOR_TRACK_ENABLE      1     // 无线串口/FPGA 帧驱动；断帧 200ms 自动停车
 
+// ======================= 色卡指令模式 =======================
+// 拨码开关切到色卡模式后, 按稳定颜色做离散动作:
+//   红=前进 CARD_DIST_CM, 绿=后退 CARD_DIST_CM, 蓝=原地旋转 CARD_ROT_DEG, 无/多色=停
+#define CARD_DIST_CM          100.0f // 前进/后退距离(cm)
+#define CARD_ROT_DEG          360.0f // 原地旋转角度(度)
+#define CARD_FWD_SPEED        50.0f  // 前进速度(Car_Speed_Y 量级, 与跟踪同量纲)
+#define CARD_BACK_SPEED       50.0f  // 后退速度
+#define CARD_ROT_SPEED        40.0f  // 旋转速度(Car_Speed_Z 量级)
+#define CARD_ROT_DIR          1      // 旋转方向: 1=顺时针(右转) -1=逆时针
+
 // ======================= 自测 =======================
 #define COLOR_TRACK_LOOPBACK_TEST  0   // 1=每500ms从UART_1发一帧测试帧(P04_1和P04_0短接时RX/F应持续增长)
 
@@ -107,6 +118,8 @@ extern volatile int8  color_track_dev_b;
 extern volatile uint8 color_track_wid_r;
 extern volatile uint8 color_track_wid_g;
 extern volatile uint8 color_track_wid_b;
+extern volatile uint8 color_track_card_mode;  // 1=色卡指令模式 0=色块跟随模式
+extern volatile uint8 color_track_card_color; // 稳定颜色: 0无/多 1红 2绿 3蓝
 
 void ColorTrack_Init(void);                 // 初始化接收串口 + 使能接收中断
 void ColorTrack_UartRxByte(uint8 b);        // 串口中断里每收到一个字节调一次

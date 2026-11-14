@@ -3,11 +3,15 @@
 /*
  * ColorTrack.c  --  色块追踪: FPGA -> 小车 UART_1
  *
- * 数据流: uart1_isr 收到字节 -> ColorTrack_UartRxByte() -> 收满 7 字节 -> on_frame()
- *         解析出 (dev, wid) -> 20ms控制周期生成横移/前进指令
+ * 数据流: uart1_isr 收到字节 -> ColorTrack_UartRxByte() -> 收满 8 字节 -> on_frame()
+ *         解析出 (模式颜色, dev, wid) -> 20ms控制周期生成横移/前进指令
  */
 
 extern uint32 system_time;                 // 来自 Control.c 的 1ms 计数器
+extern int16  LF_encoder_data;             // 来自 Encoder.c: 四轮编码器计数(每20ms)
+extern int16  RB_encoder_data;
+extern int16  LB_encoder_data;
+extern int16  RF_encoder_data;
 
 // ======================= 串口(FPGA 色块帧) =======================
 // 接收口由 ColorTrack.h 的 COLOR_TRACK_RX_PORT 选择(1=UART_1 2=UART_2)
@@ -17,7 +21,7 @@ extern uint32 system_time;                 // 来自 Control.c 的 1ms 计数器
 #define CT_RX_PIN   COLOR_TRACK_RX_RX_PIN
 
 #define CT_FRAME_HEAD   (0xAAu)            // 帧头, 数据字节里不会出现
-#define CT_DATA_LEN     (6u)               // 6 个数据字节
+#define CT_DATA_LEN     (7u)               // 7 个数据字节 (模式颜色 + 3色×2)
 
 #define COLOR_TRACK_TIMEOUT_MS  200u       // 超过这么久没收到帧就停车(丢链保护)
 
@@ -38,6 +42,8 @@ volatile int8  color_track_dev_b = (int8)0x80;
 volatile uint8 color_track_wid_r = 0;
 volatile uint8 color_track_wid_g = 0;
 volatile uint8 color_track_wid_b = 0;
+volatile uint8 color_track_card_mode  = 0;   // 1=色卡指令模式 0=色块跟随模式
+volatile uint8 color_track_card_color = 0;   // 稳定颜色: 0无/多 1红 2绿 3蓝
 
 static uint8  ct_buf[CT_DATA_LEN];
 static uint8  ct_idx     = 0;
@@ -58,9 +64,13 @@ static void color_track_on_frame(uint8 *d)
     int8  dev;
     uint8 wid;
 
-    cand_dev[0] = (int8)d[0]; cand_wid[0] = d[1];   // 红
-    cand_dev[1] = (int8)d[2]; cand_wid[1] = d[3];   // 绿
-    cand_dev[2] = (int8)d[4]; cand_wid[2] = d[5];   // 蓝
+    uint8 mode_byte = d[0];
+    color_track_card_mode  = (mode_byte & 0x01u);        // bit0: 0跟随 1色卡
+    color_track_card_color = (mode_byte >> 1) & 0x03u;   // bit2:1: 0无/多 1红 2绿 3蓝
+
+    cand_dev[0] = (int8)d[1]; cand_wid[0] = d[2];   // 红
+    cand_dev[1] = (int8)d[3]; cand_wid[1] = d[4];   // 绿
+    cand_dev[2] = (int8)d[5]; cand_wid[2] = d[6];   // 蓝
 
     color_track_dev_r = cand_dev[0]; color_track_wid_r = cand_wid[0];
     color_track_dev_g = cand_dev[1]; color_track_wid_g = cand_wid[1];
@@ -176,6 +186,82 @@ static float ct_slew(float cur, float target, float step)
     return target;
 }
 
+// ======================= 色卡指令模式 =======================
+// 红=前进1m, 绿=后退1m, 蓝=原地旋转360°, 无/多色=停
+static float card_dist_accum = 0.0f;   // 累计直线距离(cm)
+static float card_rot_accum  = 0.0f;   // 累计旋转角度(度)
+static float card_rot_prev   = 0.0f;   // 上一周期航向角
+static uint8 card_active     = 0u;     // 当前执行的颜色: 0无 1红 2绿 3蓝
+
+static void CardCommand_Update(void)
+{
+    uint8 color = color_track_card_color;
+
+    // 丢链保护: 超时未收到帧 -> 停车
+    if((uint32)(system_time - ct_last_rx_ms) > COLOR_TRACK_TIMEOUT_MS)
+    {
+        color = 0u;
+    }
+
+    if(color == 0u)                      // 无颜色 / 多色 -> 停, 清累计
+    {
+        card_active     = 0u;
+        card_dist_accum = 0.0f;
+        card_rot_accum  = 0.0f;
+        Car_Speed_X = 0.0f;
+        Car_Speed_Y = 0.0f;
+        color_track_yaw_cmd = 0.0f;
+        return;
+    }
+
+    if(color != card_active)             // 换颜色 -> 重新开始该颜色的动作
+    {
+        card_active     = color;
+        card_dist_accum = 0.0f;
+        card_rot_accum  = 0.0f;
+        card_rot_prev   = (float)imu.gyro.angle[Z];
+    }
+
+    // 累计位移/角度
+    if(color == 3u)                      // 旋转: 陀螺积分角
+    {
+        float a = (float)imu.gyro.angle[Z];
+        float d = a - card_rot_prev;
+        while(d >  180.0f) d -= 360.0f;
+        while(d < -180.0f) d += 360.0f;
+        card_rot_prev = a;
+        card_rot_accum += fabsf(d);
+    }
+    else                                 // 前进/后退: 四轮编码器平均位移(取绝对值)
+    {
+        float avg = ((float)LF_encoder_data + (float)RB_encoder_data +
+                     (float)LB_encoder_data + (float)RF_encoder_data) * 0.25f;
+        card_dist_accum += fabsf(avg) * ENCODER_COUNT_TO_CM;
+    }
+
+    Car_Speed_X = 0.0f;
+    switch(color)
+    {
+        case 1u:                         // 红: 前进 1m
+            color_track_yaw_cmd = 0.0f;
+            Car_Speed_Y = (card_dist_accum >= CARD_DIST_CM) ? 0.0f : CARD_FWD_SPEED;
+            break;
+        case 2u:                         // 绿: 后退 1m
+            color_track_yaw_cmd = 0.0f;
+            Car_Speed_Y = (card_dist_accum >= CARD_DIST_CM) ? 0.0f : -CARD_BACK_SPEED;
+            break;
+        case 3u:                         // 蓝: 原地旋转 360°
+            Car_Speed_Y = 0.0f;
+            color_track_yaw_cmd = (card_rot_accum >= CARD_ROT_DEG)
+                                  ? 0.0f : ((float)CARD_ROT_DIR * CARD_ROT_SPEED);
+            break;
+        default:
+            Car_Speed_Y = 0.0f;
+            color_track_yaw_cmd = 0.0f;
+            break;
+    }
+}
+
 // 麦轮视觉伺服: 看见目标只平移; 丢失后按最后位置方向旋转搜索; 转满一圈放弃
 void ColorTrack_UpdateCommand(void)
 {
@@ -192,6 +278,12 @@ void ColorTrack_UpdateCommand(void)
         Car_Speed_X = ct_cmd_x;
         Car_Speed_Y = ct_cmd_y;
         color_track_yaw_cmd = ct_cmd_z;
+        return;
+    }
+
+    if(color_track_card_mode)
+    {
+        CardCommand_Update();
         return;
     }
 
