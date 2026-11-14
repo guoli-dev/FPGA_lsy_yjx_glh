@@ -76,14 +76,15 @@
 
 | 稳定颜色 | 动作 |
 |---|---|
-| 红 | 前进 1m（100cm）后停 |
-| 绿 | 后退 1m（100cm）后停 |
-| 蓝 | 原地旋转 360° 后停 |
-| 无 / 多色 | 静止不动 |
+| 红 | 前进 |
+| 绿 | 后退 |
+| 蓝 | 原地旋转 |
+| 无 / 多色 | 保持上一个颜色命令（锁存） |
 
-- 距离用四轮编码器积分（`ENCODER_COUNT_TO_CM=0.486` cm/count），角度用陀螺积分。
-- 换颜色 / 无颜色时清累计重新开始；超时（`COLOR_TRACK_TIMEOUT_MS=200ms`）未收到帧自动停车。
-- 可调参数在 `ColorTrack.h`：`CARD_DIST_CM`、`CARD_ROT_DEG`、`CARD_FWD_SPEED`、`CARD_BACK_SPEED`、`CARD_ROT_SPEED`、`CARD_ROT_DIR`。
+- **锁存逻辑**：只有识别到新颜色才切换命令；无颜色/多色时继续执行上一个颜色的命令。
+- 动作连续执行，不再按距离/角度（1m/360°）限位。
+- 超时（`COLOR_TRACK_TIMEOUT_MS=200ms`）未收到帧仍自动停车。
+- 可调参数在 `ColorTrack.h`：`CARD_FWD_SPEED`(80)、`CARD_BACK_SPEED`(80)、`CARD_ROT_SPEED`(60)、`CARD_ROT_DIR`。
 
 ---
 

@@ -84,13 +84,11 @@
 #define COLOR_TRACK_ENABLE      1     // 无线串口/FPGA 帧驱动；断帧 200ms 自动停车
 
 // ======================= 色卡指令模式 =======================
-// 拨码开关切到色卡模式后, 按稳定颜色做离散动作:
-//   红=前进 CARD_DIST_CM, 绿=后退 CARD_DIST_CM, 蓝=原地旋转 CARD_ROT_DEG, 无/多色=停
-#define CARD_DIST_CM          100.0f // 前进/后退距离(cm)
-#define CARD_ROT_DEG          360.0f // 原地旋转角度(度)
-#define CARD_FWD_SPEED        50.0f  // 前进速度(Car_Speed_Y 量级, 与跟踪同量纲)
-#define CARD_BACK_SPEED       50.0f  // 后退速度
-#define CARD_ROT_SPEED        40.0f  // 旋转速度(Car_Speed_Z 量级)
+// 拨码开关切到色卡模式后, 按稳定颜色做连续动作(锁存: 识别到新颜色才切换, 无/多色保持上一命令):
+//   红=前进, 绿=后退, 蓝=原地旋转
+#define CARD_FWD_SPEED        80.0f  // 前进速度(Car_Speed_Y 量级, 与跟踪同量纲)
+#define CARD_BACK_SPEED       80.0f  // 后退速度
+#define CARD_ROT_SPEED        60.0f  // 旋转速度(Car_Speed_Z 量级)
 #define CARD_ROT_DIR          1      // 旋转方向: 1=顺时针(右转) -1=逆时针
 
 // ======================= 自测 =======================

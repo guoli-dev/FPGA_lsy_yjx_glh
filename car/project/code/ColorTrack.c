@@ -187,75 +187,45 @@ static float ct_slew(float cur, float target, float step)
 }
 
 // ======================= 色卡指令模式 =======================
-// 红=前进1m, 绿=后退1m, 蓝=原地旋转360°, 无/多色=停
-static float card_dist_accum = 0.0f;   // 累计直线距离(cm)
-static float card_rot_accum  = 0.0f;   // 累计旋转角度(度)
-static float card_rot_prev   = 0.0f;   // 上一周期航向角
-static uint8 card_active     = 0u;     // 当前执行的颜色: 0无 1红 2绿 3蓝
+// 红=前进, 绿=后退, 蓝=原地旋转; 无/多色=保持上一个颜色命令(锁存)
+static uint8 card_active = 0u;     // 锁存的命令颜色: 0无 1红 2绿 3蓝
 
 static void CardCommand_Update(void)
 {
     uint8 color = color_track_card_color;
 
-    // 丢链保护: 超时未收到帧 -> 停车
+    // 丢链保护: 超时未收到帧 -> 停车并清锁存
     if((uint32)(system_time - ct_last_rx_ms) > COLOR_TRACK_TIMEOUT_MS)
     {
-        color = 0u;
-    }
-
-    if(color == 0u)                      // 无颜色 / 多色 -> 停, 清累计
-    {
-        card_active     = 0u;
-        card_dist_accum = 0.0f;
-        card_rot_accum  = 0.0f;
+        card_active = 0u;
         Car_Speed_X = 0.0f;
         Car_Speed_Y = 0.0f;
         color_track_yaw_cmd = 0.0f;
         return;
     }
 
-    if(color != card_active)             // 换颜色 -> 重新开始该颜色的动作
+    // 锁存: 只有识别到新颜色才切换命令; 无/多色保持上一个命令
+    if(color != 0u)
     {
-        card_active     = color;
-        card_dist_accum = 0.0f;
-        card_rot_accum  = 0.0f;
-        card_rot_prev   = (float)imu.gyro.angle[Z];
-    }
-
-    // 累计位移/角度
-    if(color == 3u)                      // 旋转: 陀螺积分角
-    {
-        float a = (float)imu.gyro.angle[Z];
-        float d = a - card_rot_prev;
-        while(d >  180.0f) d -= 360.0f;
-        while(d < -180.0f) d += 360.0f;
-        card_rot_prev = a;
-        card_rot_accum += fabsf(d);
-    }
-    else                                 // 前进/后退: 四轮编码器平均位移(取绝对值)
-    {
-        float avg = ((float)LF_encoder_data + (float)RB_encoder_data +
-                     (float)LB_encoder_data + (float)RF_encoder_data) * 0.25f;
-        card_dist_accum += fabsf(avg) * ENCODER_COUNT_TO_CM;
+        card_active = color;
     }
 
     Car_Speed_X = 0.0f;
-    switch(color)
+    switch(card_active)
     {
-        case 1u:                         // 红: 前进 1m
+        case 1u:                         // 红: 前进
             color_track_yaw_cmd = 0.0f;
-            Car_Speed_Y = (card_dist_accum >= CARD_DIST_CM) ? 0.0f : CARD_FWD_SPEED;
+            Car_Speed_Y = CARD_FWD_SPEED;
             break;
-        case 2u:                         // 绿: 后退 1m
+        case 2u:                         // 绿: 后退
             color_track_yaw_cmd = 0.0f;
-            Car_Speed_Y = (card_dist_accum >= CARD_DIST_CM) ? 0.0f : -CARD_BACK_SPEED;
+            Car_Speed_Y = -CARD_BACK_SPEED;
             break;
-        case 3u:                         // 蓝: 原地旋转 360°
+        case 3u:                         // 蓝: 原地旋转
             Car_Speed_Y = 0.0f;
-            color_track_yaw_cmd = (card_rot_accum >= CARD_ROT_DEG)
-                                  ? 0.0f : ((float)CARD_ROT_DIR * CARD_ROT_SPEED);
+            color_track_yaw_cmd = (float)CARD_ROT_DIR * CARD_ROT_SPEED;
             break;
-        default:
+        default:                         // 无命令 -> 停
             Car_Speed_Y = 0.0f;
             color_track_yaw_cmd = 0.0f;
             break;
