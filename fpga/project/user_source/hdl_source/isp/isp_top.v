@@ -933,7 +933,13 @@ module color_detect_96 #(
             hr1 <= 1'b0; hr2 <= 1'b0;
             hg1 <= 1'b0; hg2 <= 1'b0;
             hb1 <= 1'b0; hb2 <= 1'b0;
-        end else if (I_tvalid) begin
+        end else if (!I_tvalid) begin
+            // line gap: clear, otherwise the first pixels of every line
+            // mix in the tail of the previous line (stale median window)
+            hr1 <= 1'b0; hr2 <= 1'b0;
+            hg1 <= 1'b0; hg2 <= 1'b0;
+            hb1 <= 1'b0; hb2 <= 1'b0;
+        end else begin
             hr1 <= hr;  hr2 <= hr1;
             hg1 <= hg;  hg2 <= hg1;
             hb1 <= hb;  hb2 <= hb1;
