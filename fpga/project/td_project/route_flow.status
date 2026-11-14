@@ -1,0 +1,26 @@
+Location         : D:\FPGA\FPGA_lsy_yjx_glh-1\fpga\project\td_project
+Running with     : Tang Dynasty v6.2.168116
+                   Copyright (c) 2012-2025 Anlogic Inc.
+Top Model        : design_top_wrapper
+Device           : PH1P35MDG324
+Speed            : 3
+
+Timing Mode      : final
+Setup            : WNS   125ps  TNS        0ps  NUM_FEPS     0
+Hold             : WNS    20ps  TNS        0ps  NUM_FEPS     0
+
+Flow Statistics  :
+---------------------------------------------------------------------------------------------------
+     command     |  #calls  |  wall time   |  cpu time(s)  |  used memory(mb)  |  peak memory(mb)  
+---------------------------------------------------------------------------------------------------
+  optimize_gate  |    1     |  6m44s(26%)  |   394(22%)    |       1066        |       1247        
+      route      |    1     |  6m38s(25%)  |   610(34%)    |       1900        |       2374        
+      place      |    1     |  5m56s(23%)  |   410(22%)    |       1633        |       1692        
+  optimize_rtl   |    1     |  5m27s(21%)  |   319(17%)    |        918        |       1009        
+    fix_hold     |    1     |   41s(2%)    |    42(2%)     |       1852        |       2374        
+    read_adc     |    1     |   13s(0%)    |    12(0%)     |        981        |        984        
+  import_device  |    1     |    1s(0%)    |     1(0%)     |        324        |        324        
+    read_sdc     |    3     |    0s(0%)    |     0(0%)     |        975        |        984        
+---------------------------------------------------------------------------------------------------
+      total      |    10    |    25m40s    |     1788      |       1900        |       2374        
+---------------------------------------------------------------------------------------------------

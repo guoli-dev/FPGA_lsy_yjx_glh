@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Project Version="3" Minor="2" Path="D:/FPGA/last/submission/PH1P35_ISP_demo_60fps_submission_20261030/project/td_project">
+<Project Version="3" Minor="2" Path="D:/FPGA/FPGA_lsy_yjx_glh-1/fpga/project/td_project">
     <Project_Created_Time></Project_Created_Time>
     <TD_Encoding>UTF-8</TD_Encoding>
     <TD_Version>6.2.168116</TD_Version>
@@ -25,6 +25,22 @@
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
                     <Attr Name="CompileOrder" Val="7"/>
+                </FileInfo>
+            </File>
+            <File Path="../user_source/hdl_source/color_buzzer_alert.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="84"/>
+                </FileInfo>
+            </File>
+            <File Path="../user_source/hdl_source/status_seg8.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="85"/>
                 </FileInfo>
             </File>
             <File Path="../user_source/hdl_source/video_in.v">
@@ -672,6 +688,7 @@
             </File>
             <File Path="../user_source/ip_source/divider/divider.ipc">
                 <FileInfo>
+                    <Attr Name="AutoExcluded" Val="true"/>
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>

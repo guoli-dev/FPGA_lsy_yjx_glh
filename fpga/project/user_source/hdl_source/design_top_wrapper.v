@@ -9,9 +9,12 @@ module design_top_wrapper (
     output wire       O_cam_rst,
       
     inout wire [1:0]  I_button,
+    input wire        I_car_mode_sw,
 
     output wire       O_uart_tx,
     output wire       O_buzzer,
+    output wire [7:0] O_seg_sel,
+    output wire [7:0] O_seg_dig,
     output wire       O_tmds_ch0_p,
     output wire       O_tmds_ch1_p,
     output wire       O_tmds_ch2_p,
@@ -762,12 +765,13 @@ assign S_det_boxes_hdmi = S_det_sync;
 // 摄像头装在小车上往前看。追踪 = 视觉伺服: 每帧把三色块的"横向偏差 + 尺寸"
 // 发给小车 MCU, 它据偏差转向、据尺寸调速, 让目标色块保持在画面正中。
 //
-// 协议 (每帧 7 字节, 60Hz, 115200 8N1):
+// 协议 (每帧 8 字节, 60Hz, 115200 8N1):
 //   [0] 0xAA        帧头
-//   [1] 红 偏差     有符号: (红cx-640)>>3, 0=居中 负=偏左 正=偏右; 0x80=本帧无红
-//   [2] 红 宽度     (right-left)>>3, 小=远 大=近
-//   [3] 绿 偏差   [4] 绿 宽度
-//   [5] 蓝 偏差   [6] 蓝 宽度
+//   [1] 模式动作    bit0=模式(0跟随/1色卡), bit2:1=动作(00停/01进/10返)
+//   [2] 红 偏差     有符号: (红cx-640)>>3, 0=居中 负=偏左 正=偏右; 0x80=本帧无红
+//   [3] 红 宽度     (right-left)>>3, 小=远 大=近
+//   [4] 绿 偏差   [5] 绿 宽度
+//   [6] 蓝 偏差   [7] 蓝 宽度
 // 0xAA 不会与数据撞车: 偏差取值 [-80,+79] (0x80 哨兵), 宽度 [0,159], 都到不了
 // 0xAA。前提是 >>3 这个比例不变; 改比例要重新核对 0xAA 会不会出现在数据里。
 
@@ -839,17 +843,65 @@ always @(posedge S_100m_clk or negedge S_rst_n) begin
 end
 wire S_frame_event_100m = S_frame_toggle_100m[2] ^ S_frame_toggle_100m[1];
 
-// Buzzer alert was intentionally removed. Keep the board pin quiet while
-// preserving the top-level port and pin constraint for rollback compatibility.
-assign O_buzzer = 1'b0;
+// Physical SW1 is static but asynchronous to the 100 MHz logic.
+// SW1 down (logic 0) selects follow mode; SW1 up (logic 1) selects card mode.
+reg [1:0] S_car_mode_sw_sync;
+always @(posedge S_100m_clk or negedge S_rst_n) begin
+    if (!S_rst_n)
+        S_car_mode_sw_sync <= 2'b00;
+    else
+        S_car_mode_sw_sync <= {S_car_mode_sw_sync[0], I_car_mode_sw};
+end
+wire S_card_mode = S_car_mode_sw_sync[1];
 
-// 打包: [7:0]=0xAA 先发, 依次 红dev 红宽 绿dev 绿宽 蓝dev 蓝宽
-wire [55:0] S_car_pkt = { S_wid_b, S_dev_b, S_wid_g, S_dev_g, S_wid_r, S_dev_r, 8'hAA };
+// A color must be the only valid target for six consecutive frames. The
+// buzzer sounds once only when that stable color changes in card-command mode.
+wire [1:0] S_stable_color;
+color_buzzer_alert #(
+    .STABLE_FRAMES (4'd6),
+    .BEEP_FRAMES   (4'd9),
+    .TONE_HALF_LAST(16'd49_999)
+) u_color_buzzer_alert (
+    .I_clk         (S_100m_clk),
+    .I_rst_n       (S_rst_n),
+    .I_frame_event (S_frame_event_100m),
+    .I_card_mode   (S_card_mode),
+    .I_red_valid   (S_v_r),
+    .I_green_valid (S_v_g),
+    .I_blue_valid  (S_v_b),
+    .O_stable_color(S_stable_color),
+    .O_buzzer      (O_buzzer)
+);
+
+status_seg8 u_status_seg8 (
+    .I_clk         (S_100m_clk),
+    .I_rst_n       (S_rst_n),
+    .I_card_mode   (S_card_mode),
+    .I_red_valid   (S_v_r),
+    .I_green_valid (S_v_g),
+    .I_blue_valid  (S_v_b),
+    .I_stable_color(S_stable_color),
+    .O_seg_sel     (O_seg_sel),
+    .O_seg_dig     (O_seg_dig)
+);
+
+// Byte 1: bit0=car mode (0=follow, 1=card); bit2:1=action (00=stop, 01=go, 10=back).
+// Card-command mapping: red=stop, green=go, blue=back. Follow mode sends 0x00.
+wire [1:0] S_action = (S_stable_color == 2'd2) ? 2'd1 :   // green -> forward
+                       (S_stable_color == 2'd3) ? 2'd2 :   // blue  -> back
+                                                  2'd0;    // red/none -> stop
+wire [7:0] S_mode_action = S_card_mode ? {5'd0, S_action, 1'b1} : 8'h00;
+
+// Packet order: AA, mode/action, red dev/width, green dev/width, blue dev/width.
+wire [63:0] S_car_pkt = {
+    S_wid_b, S_dev_b, S_wid_g, S_dev_g,
+    S_wid_r, S_dev_r, S_mode_action, 8'hAA
+};
 
 uart_pkt_tx #(
     .CLK_FREQ(100_000_000),
     .BAUD    (115200),
-    .NBYTE   (7)
+    .NBYTE   (8)
 ) u_car_tx (
     .I_clk  (S_100m_clk),
     .I_rst_n(S_rst_n),
