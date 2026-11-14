@@ -38,3 +38,31 @@ desktop.ini
 skills_test/
 _merge_src/
 .probe.txt
+
+# --- 逐飞 SDK（第三方库，不入库）---
+car/libraries/
+libraries/
+
+# --- 安路 TD 构建产物（不入库）---
+fpga/project/td_project/*.area
+fpga/project/td_project/*.timing
+fpga/project/td_project/*.ts
+fpga/project/td_project/*.status
+fpga/project/td_project/*.qor
+fpga/project/td_project/*.bit
+fpga/project/td_project/*.bid
+fpga/project/td_project/final_timing.rpt
+fpga/project/td_project/*_clock_utilization.txt
+fpga/project/td_project/build_stdout.log
+fpga/project/td_project/.*.begin.f
+fpga/project/td_project/.*.end.f
+fpga/project/td_project/.*.error.f
+fpga/project/td_project/.bitgen*
+fpga/project/td_project/td_*.log
+fpga/project/td_project/*.logw
+fpga/project/td_project/log/
+
+# --- IAR 构建输出（重构后新路径）---
+car/project/iar/**/Debug_*/
+car/project/iar/**/Release_*/
+car/project/iar/**/settings/
