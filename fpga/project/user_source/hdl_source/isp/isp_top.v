@@ -26,6 +26,9 @@ module isp_top (
     output [63:0] 	O_mot_box,
     output 			O_ae_too_bright	,
     output 			O_ae_too_dark	,
+    // diagnostic probe: RGB of the frame's largest-G pixel. Point the camera at
+    // the green target and this reports its real values onto the OSD in mode 7.
+    output [23:0] 	O_probe_rgb		,
     output 			O_ae_frame_toggle
 );
  
@@ -164,6 +167,40 @@ wire [95:0] awb_demo_tdata = (S_mode == 3'd5 && awb_beat_x < 9'd160)
                                ? awb_raw_tdata : awb_O_tdata;
 wire [95:0] demo_tdata = (S_mode == 3'd6 && gamma_left_d)
                             ? gamma_bypass_d : gam_tdata;
+
+// ---- diagnostic probe -------------------------------------------------------
+// Latch the RGB of the largest-G pixel seen this frame. Whatever green target
+// the camera is pointed at, this reports its actual R/G/B, which is exactly what
+// is_green compares against the 12.5 % margin. Read it off the OSD in mode 7.
+// Pixel layout in gam_tdata: pix0=[95:72] ... pix3=[23:0], {R,G,B} inside each.
+wire [7:0] pb_g0 = gam_tdata[87:80];
+wire [7:0] pb_g1 = gam_tdata[63:56];
+wire [7:0] pb_g2 = gam_tdata[39:32];
+wire [7:0] pb_g3 = gam_tdata[15: 8];
+wire       pb_w1 = (pb_g1 > pb_g0);
+wire       pb_w3 = (pb_g3 > pb_g2);
+wire [7:0] pb_ga = pb_w1 ? pb_g1 : pb_g0;
+wire [7:0] pb_gb = pb_w3 ? pb_g3 : pb_g2;
+wire [23:0] pb_pa = pb_w1 ? gam_tdata[71:48] : gam_tdata[95:72];
+wire [23:0] pb_pb = pb_w3 ? gam_tdata[23: 0] : gam_tdata[47:24];
+wire       pb_wb = (pb_gb > pb_ga);
+wire [7:0] pb_gmax = pb_wb ? pb_gb : pb_ga;
+wire [23:0] pb_pmax = pb_wb ? pb_pb : pb_pa;
+
+reg  [7:0]  S_pb_best;
+reg  [23:0] S_pb_rgb;
+always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
+    if (!I_rst_n) begin
+        S_pb_best <= 8'd0;
+        S_pb_rgb  <= 24'd0;
+    end else if (gam_tuser) begin
+        S_pb_best <= 8'd0;                 // restart the search each frame
+    end else if (gam_tvalid && (pb_gmax > S_pb_best)) begin
+        S_pb_best <= pb_gmax;
+        S_pb_rgb  <= pb_pmax;
+    end
+end
+assign O_probe_rgb = S_pb_rgb;
 
 // Four pixels per valid beat; reset during the line gap (tlast is a
 // falling-valid pulse in this legacy AWB). No frame buffer or pixel drop.
@@ -395,8 +432,30 @@ cartoon_effect_96 #(
 // 显示模式选择: 0=原图  1=边缘  2=卡通化  3=跟踪(原图+画框)
 // (2 原来是 SEG 分割模式的占位, 一直回落到原图; 2026-10-10 改成卡通化,
 //  直接补上基础扩展要求(1) 的"区域填充"。)
-wire [95:0] S_mux_tdata = (S_mode == 2'd1) ? edge_tdata    :
-                          (S_mode == 2'd2) ? cartoon_tdata : raw_tdata_d;
+wire [95:0] cls_tdata;
+wire        cls_tuser, cls_tvalid;
+
+// mode 7 = colour classification debug: hit pixels are tinted
+//   magenta = judged blue, yellow = judged green, cyan = judged red
+// the criteria inside are identical to color_detect_96 so this view is exact
+classify_overlay_96 #(
+    .COLOR_MARGIN_SHIFT(2 ),
+    .MIN_BRIGHT       (45)
+) u_classify (
+    .I_clk   (axi4s_video_aclk),
+    .I_rst_n (I_rst_n),
+    .I_bypass(1'b0),
+    .I_tuser (gam_tuser ),
+    .I_tvalid(gam_tvalid),
+    .I_tdata (gam_tdata ),
+    .O_tuser (cls_tuser ),
+    .O_tvalid(cls_tvalid),
+    .O_tdata (cls_tdata )
+);
+
+wire [95:0] S_mux_tdata = (S_mode == 3'd1) ? edge_tdata    :
+                          (S_mode == 3'd2) ? cartoon_tdata :
+                          (S_mode == 3'd7) ? cls_tdata     : raw_tdata_d;
 
 always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
     if (!I_rst_n) begin
@@ -531,6 +590,7 @@ module gamma_96 #(
     function [7:0] gam8;
         input [7:0] vin;
         reg   [8:0] v;
+        reg   [9:0] d;
         reg   [9:0] t;
         reg   [9:0] x;
         begin
@@ -554,9 +614,13 @@ module gamma_96 #(
                 x = {1'b0, (v - 9'd64)};
                 t = 10'd112 + x + (x >> 2);                             // x1.25
             end
-            else begin
+            else if (v < 9'd192) begin
                 x = {1'b0, (v - 9'd128)};
-                t = 10'd192 + (x >> 1);                                 // x0.5 uniform above 128 -> highlights keep gradation
+                t = 10'd192 + (((x << 1) + x) >> 2);                     // x0.75
+            end
+            else begin
+                x = {1'b0, (v - 9'd192)};
+                t = 10'd240 + (x >> 2);                                 // x0.25
             end
             gam8 = (t > 10'd255) ? 8'hff : t[7:0];
         end
@@ -568,35 +632,58 @@ module gamma_96 #(
         gam8(I_tdata[47:40]), gam8(I_tdata[39:32]), gam8(I_tdata[31:24]),
         gam8(I_tdata[23:16]), gam8(I_tdata[15:8]),  gam8(I_tdata[7:0])
     };
+    // ---- saturation, 2026-11-15 -------------------------------------------
+    // Formula taken from the reference project (fpga-vision-servo-ab), which
+    // writes the same thing as   sum = 16*C + (C-Y)*K  ->  out = C + (C-Y)*K/16
+    //
+    //   Y = (R + 2G + B) >> 2   green-weighted luma, NOT (R+G+B)>>2.
+    //                           The old mid = (R+G+B)>>2 is only 0.75 of the
+    //                           true mean, so every channel sat above it and the
+    //                           whole picture was lifted ~9% (a grey 128 came
+    //                           out at 140). That lift is what read as washed
+    //                           out, and it also cost contrast everywhere.
+    //
+    // Two deliberate differences from the reference:
+    //   * they spend 12 DSPs (pre-subtract, multiply and post-add inside one
+    //     DSP per channel). Here the boost is written out as shifts.
+    //     Do NOT write "d * K" even when K is a localparam: TD still builds a
+    //     real multiplier and maps it to a DSP (measured: 28 -> 48 DSPs, 120 %
+    //     of the device, the fit fails). 6/16 = 1/4 + 1/8 keeps it shift-add.
+    //   * their clamp decodes the DSP accumulator overflow bits. Here the sum
+    //     is a small unsigned number and both ends are clamped explicitly, so
+    //     a dark channel can never wrap up into white the way the previous
+    //     version did.
 
-    // 2026-11-13 方案 A：饱和度增强。链路里原本完全没有饱和度这一级，
-    // 而 AWB 是灰世界（会把画面平均拉成中性），叠加起来就是颜色发灰发淡。
-    //     mid = (r + g + b) >> 2          （用 >>2 代替 /3，省一个除法）
-    //     out = c + ((c - mid) >> 2)      （每个通道离灰值再远 25%）
-    // 纯移位加法，0 乘法器；放在 gamma 之后、算法分支之前，显示和识别共用。
     function [7:0] sat8;
         input [7:0] c;
-        input [9:0] mid;
-        reg   [9:0] t;
+        input [7:0] y;
+        reg   [9:0] d;
+        reg   [9:0] p;
+        reg   [9:0] s;
         begin
-            if ({2'b0, c} >= mid)
-                t = {2'b0, c} + (({2'b0, c} - mid) >> 2);
-            else
-                t = {2'b0, c} - ((mid - {2'b0, c}) >> 2);
-            sat8 = (t > 10'd255) ? 8'hff : t[7:0];
+            if (c >= y) begin
+                d = {2'b0, c} - {2'b0, y};
+                p = (d >> 2) + (d >> 3);              // 6/16 = 1/4 + 1/8, shift-add
+                s = {2'b0, c} + p;
+                sat8 = (s > 10'd255) ? 8'hff : s[7:0];
+            end else begin
+                d = {2'b0, y} - {2'b0, c};
+                p = (d >> 2) + (d >> 3);              // 6/16 = 1/4 + 1/8, shift-add
+                sat8 = ({2'b0, c} > p) ? ({2'b0, c} - p) : 8'd0;
+            end
         end
     endfunction
 
-    wire [9:0] S_m0 = ({2'b0,S_gam[95:88]} + {2'b0,S_gam[87:80]} + {2'b0,S_gam[79:72]}) >> 2;
-    wire [9:0] S_m1 = ({2'b0,S_gam[71:64]} + {2'b0,S_gam[63:56]} + {2'b0,S_gam[55:48]}) >> 2;
-    wire [9:0] S_m2 = ({2'b0,S_gam[47:40]} + {2'b0,S_gam[39:32]} + {2'b0,S_gam[31:24]}) >> 2;
-    wire [9:0] S_m3 = ({2'b0,S_gam[23:16]} + {2'b0,S_gam[15: 8]} + {2'b0,S_gam[ 7: 0]}) >> 2;
+    wire [9:0] S_y0 = ({2'b0,S_gam[95:88]} + {1'b0,S_gam[87:80],1'b0} + {2'b0,S_gam[79:72]}) >> 2;
+    wire [9:0] S_y1 = ({2'b0,S_gam[71:64]} + {1'b0,S_gam[63:56],1'b0} + {2'b0,S_gam[55:48]}) >> 2;
+    wire [9:0] S_y2 = ({2'b0,S_gam[47:40]} + {1'b0,S_gam[39:32],1'b0} + {2'b0,S_gam[31:24]}) >> 2;
+    wire [9:0] S_y3 = ({2'b0,S_gam[23:16]} + {1'b0,S_gam[15: 8],1'b0} + {2'b0,S_gam[ 7: 0]}) >> 2;
 
     wire [95:0] S_sat = {
-        sat8(S_gam[95:88], S_m0), sat8(S_gam[87:80], S_m0), sat8(S_gam[79:72], S_m0),
-        sat8(S_gam[71:64], S_m1), sat8(S_gam[63:56], S_m1), sat8(S_gam[55:48], S_m1),
-        sat8(S_gam[47:40], S_m2), sat8(S_gam[39:32], S_m2), sat8(S_gam[31:24], S_m2),
-        sat8(S_gam[23:16], S_m3), sat8(S_gam[15: 8], S_m3), sat8(S_gam[ 7: 0], S_m3)
+        sat8(S_gam[95:88], S_y0[7:0]), sat8(S_gam[87:80], S_y0[7:0]), sat8(S_gam[79:72], S_y0[7:0]),
+        sat8(S_gam[71:64], S_y1[7:0]), sat8(S_gam[63:56], S_y1[7:0]), sat8(S_gam[55:48], S_y1[7:0]),
+        sat8(S_gam[47:40], S_y2[7:0]), sat8(S_gam[39:32], S_y2[7:0]), sat8(S_gam[31:24], S_y2[7:0]),
+        sat8(S_gam[23:16], S_y3[7:0]), sat8(S_gam[15: 8], S_y3[7:0]), sat8(S_gam[ 7: 0], S_y3[7:0])
     };
 
     always @(posedge I_clk or negedge I_rst_n) begin
@@ -876,11 +963,14 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg   [7:0] m;
         begin
-            // 2026-11-14: 5/16 -> 3/16。AWB 是灰世界估计, 会把 R/B 增益抬到 sum_g/sum_r,
-            //   专门用来中和"传感器原生偏绿"。绿表面的相对饱和度因此被吃掉, 而红/蓝被抬高后
-            //   相对余量反而变大 —— 所以只放松绿色这一条。R 允许到 G 的 81.25% (原 68.75%)。
-            //   面积不变(还是两次移位一次加), 亮度门与 g>=r && g>=b 主导条件均未改动。
-            m = (g >> 3) + (g >> 4);
+            // 2026-11-15: 3/16 -> 5/32 (18.75% -> 15.6%). The mode-7 overlay
+            //   showed the gate fails on green objects near the frame edge even
+            //   though the radial tint there REDUCES R and B (which should widen
+            //   g-r, not narrow it). So the residual edge cast is stronger than
+            //   the tint assumes. 5/32 is a 17% relaxation, one step short of
+            //   2/16=12.5%, so olive/yellow still stays out.
+            //   Cost unchanged: two shifts and one add, same as before.
+            m = (g >> 3);                    // 2/16 = 12.5 %
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= m) && ((g - b) >= m);
         end
@@ -933,13 +1023,7 @@ module color_detect_96 #(
             hr1 <= 1'b0; hr2 <= 1'b0;
             hg1 <= 1'b0; hg2 <= 1'b0;
             hb1 <= 1'b0; hb2 <= 1'b0;
-        end else if (!I_tvalid) begin
-            // line gap: clear, otherwise the first pixels of every line
-            // mix in the tail of the previous line (stale median window)
-            hr1 <= 1'b0; hr2 <= 1'b0;
-            hg1 <= 1'b0; hg2 <= 1'b0;
-            hb1 <= 1'b0; hb2 <= 1'b0;
-        end else begin
+        end else if (I_tvalid) begin
             hr1 <= hr;  hr2 <= hr1;
             hg1 <= hg;  hg2 <= hg1;
             hb1 <= hb;  hb2 <= hb1;
@@ -966,15 +1050,75 @@ module color_detect_96 #(
     // 包括上游 awb 那个 O_tuser 组合直通 / O_tvalid 延两拍的错拍条件,
     // 两个信号同延一拍后, 相对关系原样保持, 跟踪器里那句
     // `I_tuser && !I_tvalid` 照旧成立。
-    reg [3:0] hit_r_r, hit_g_r, hit_b_r;
-    reg       tuser_r,  tvalid_r;
+    // ---- vertical 3-point median on the group hit mask (2026-11-15) ----------
+    // The horizontal 3-point median above removes isolated hits along a line but
+    // keeps a single-row speck that runs vertically. A second median in the
+    // vertical direction turns it into a proper cross (plus) 5-point median.
+    //
+    // Storage: 2 lines x 320 groups x 3 colours = 1920 bit. As plain registers
+    // that is ~1920 slices (the old 94.2% design could not afford it); as small
+    // RAM it collapses to roughly 60 LUT of distributed RAM. Keep the arrays
+    // plain (no ram_style attribute) and let TD infer DRAM.
+    //
+    // Latency bookkeeping: ov1/ov2 and cur_d all become valid at t+1 relative to
+    // the hit, so vmed_q_path is ready exactly 1 cycle after the hit - the
+    // same delay the old hit register had. tuser_r/tvalid_r stay 1 cycle, so the
+    // alignment into the CCL is unchanged.
+    //
+    // vx counts groups inside a line and wraps at 319, independent of tlast.
+    reg [8:0] vx;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n)
+            vx <= 9'd0;
+        else if (I_tvalid)
+            vx <= (vx == 9'd319) ? 9'd0 : (vx + 9'd1);
+    end
 
+    reg [2:0] ln1 [0:319];      // previous line     : {g, r, b}
+    reg [2:0] ln2 [0:319];      // line before that
+    reg [2:0] ov1, ov2;         // synchronous read-out at vx
+
+    always @(posedge I_clk) begin
+        ov1 <= ln1[vx];
+        ov2 <= ln2[vx];
+        if (I_tvalid) begin
+            ln2[vx] <= ln1[vx];             // read-before-write gives the old value
+            ln1[vx] <= {hg_m, hr_m, hb_m};   // bit2=g  bit1=r  bit0=b  (keep in sync with vmed_q_path)
+        end
+    end
+
+    reg [2:0] cur_d;
+    always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m};    // same packing as ln1
+
+    // median of three = at least two true
+    // BYPASS_VMED is an A/B switch: 1 = feed the CCL from the horizontal median
+    // only (the behaviour before the vertical stage existed), 0 = full cross
+    // median. Set to 0 to re-enable the vertical stage.
+    localparam BYPASS_VMED = 1'b1;
+
+    // Both paths must reach the CCL with exactly one clock of latency:
+    //   vertical median - cur_d / ov1 / ov2 are all registered, so the median
+    //                     function itself is already 1 clock deep;
+    //   bypass          - hr_m/hg_m/hb_m are combinational, so register them.
+    reg [2:0] hmed_q;
+    always @(posedge I_clk) hmed_q <= {hg_m, hr_m, hb_m};
+
+    wire [2:0] vmed_q_path = {
+        (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]),   // g = bit2
+        (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]),   // r = bit1
+        (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0])    // b = bit0
+    };
+    wire [2:0] vmed_sel   = BYPASS_VMED ? hmed_q : vmed_q_path;
+
+    wire [3:0] hit_r_r = {4{vmed_sel[1]}};
+    wire [3:0] hit_g_r = {4{vmed_sel[2]}};
+    wire [3:0] hit_b_r = {4{vmed_sel[0]}};
+
+    reg       tuser_r,  tvalid_r;
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n) begin
-            hit_r_r <= 4'd0; hit_g_r <= 4'd0; hit_b_r <= 4'd0;
             tuser_r <= 1'b0; tvalid_r <= 1'b0;
         end else begin
-            hit_r_r <= hit_r; hit_g_r <= hit_g; hit_b_r <= hit_b;
             tuser_r <= I_tuser; tvalid_r <= I_tvalid;
         end
     end
@@ -1553,10 +1697,12 @@ module classify_overlay_96 #(
     endfunction
     function is_green;
         input [7:0] r, g, b;
+        reg [7:0] g_m;
         begin
+            // must match color_detect_96 exactly, otherwise this debug view lies
+            g_m = (g >> 3);                     // 2/16 = 12.5 %, must match the detector
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
-                       ((g - r) >= (g >> COLOR_MARGIN_SHIFT)) &&
-                       ((g - b) >= (g >> COLOR_MARGIN_SHIFT));
+                       ((g - r) >= g_m) && ((g - b) >= g_m);
         end
     endfunction
     function is_blue;
@@ -3167,7 +3313,7 @@ module radial_tint_96 #(
     wire [19:0] dy2   = dy_u * dy_u;
     wire [22:0] r2    = {2'b0, dx2} + {3'b0, dy2} + {2'b0, dy2, 1'b0};   // 2026-11-14: dx2 + 3*dy2 = 16:9 ellipse (no extra multiplier)
 
-    wire [5:0]  z6    = r2 >> 16;   // 8-step table: corners land on zone 12, no saturation at 15
+    wire [5:0]  z6    = r2 >> 16;   // 8-step table: corners land on zone 12
     wire [3:0]  zone  = z6[3:0];      // max 12, clamp not needed
 
     // ---------------------------------------------------------------- 系数表
