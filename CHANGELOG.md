@@ -76,15 +76,16 @@
 
 | 稳定颜色 | 动作 |
 |---|---|
-| 红 | 前进 |
-| 绿 | 后退 |
+| 红 | 停止 |
+| 绿 | 前进 |
 | 蓝 | 原地旋转 |
 | 无 / 多色 | 保持上一个颜色命令（锁存） |
 
 - **锁存逻辑**：只有识别到新颜色才切换命令；无颜色/多色时继续执行上一个颜色的命令。
 - 动作连续执行，不再按距离/角度（1m/360°）限位。
 - 超时（`COLOR_TRACK_TIMEOUT_MS=200ms`）未收到帧仍自动停车。
-- 可调参数在 `ColorTrack.h`：`CARD_FWD_SPEED`(80)、`CARD_BACK_SPEED`(80)、`CARD_ROT_SPEED`(60)、`CARD_ROT_DIR`。
+- 可调参数在 `ColorTrack.h`：`CARD_FWD_SPEED`(80)、`CARD_ROT_SPEED`(60)、`CARD_ROT_DIR`。
+- 跟随模式平滑：`COLOR_TRACK_DEV_ALPHA`/`COLOR_TRACK_WID_ALPHA` 0.30 → 0.18（更平滑，消除一卡一卡）。
 
 ---
 

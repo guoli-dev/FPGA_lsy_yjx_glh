@@ -74,8 +74,8 @@
 #define COLOR_TRACK_MAX_BACK            0.0f  // 最大后退速度; 0=太近只停不后退
 
 // 平滑: 一阶低通 + 命令斜率限制, 消除卡顿/硬起停
-#define COLOR_TRACK_DEV_ALPHA           0.30f // dev 低通系数(0~1, 越小越平滑)
-#define COLOR_TRACK_WID_ALPHA           0.30f // 宽度低通系数
+#define COLOR_TRACK_DEV_ALPHA           0.18f // dev 低通系数(0~1, 越小越平滑)
+#define COLOR_TRACK_WID_ALPHA           0.18f // 宽度低通系数
 #define COLOR_TRACK_ACCEL_STEP          5.0f  // 每20ms横移/前后命令最大变化量
 #define COLOR_TRACK_Z_STEP              10.0f // 每20ms车头修正量最大变化量(抑制左右抖)
 #define COLOR_TRACK_BASE_SPEED         35.0f  // [旧]
@@ -85,9 +85,8 @@
 
 // ======================= 色卡指令模式 =======================
 // 拨码开关切到色卡模式后, 按稳定颜色做连续动作(锁存: 识别到新颜色才切换, 无/多色保持上一命令):
-//   红=前进, 绿=后退, 蓝=原地旋转
+//   红=停止, 绿=前进, 蓝=原地旋转
 #define CARD_FWD_SPEED        80.0f  // 前进速度(Car_Speed_Y 量级, 与跟踪同量纲)
-#define CARD_BACK_SPEED       80.0f  // 后退速度
 #define CARD_ROT_SPEED        60.0f  // 旋转速度(Car_Speed_Z 量级)
 #define CARD_ROT_DIR          1      // 旋转方向: 1=顺时针(右转) -1=逆时针
 

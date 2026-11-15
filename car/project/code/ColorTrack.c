@@ -187,7 +187,7 @@ static float ct_slew(float cur, float target, float step)
 }
 
 // ======================= 色卡指令模式 =======================
-// 红=前进, 绿=后退, 蓝=原地旋转; 无/多色=保持上一个颜色命令(锁存)
+// 红=停止, 绿=前进, 蓝=原地旋转; 无/多色=保持上一个颜色命令(锁存)
 static uint8 card_active = 0u;     // 锁存的命令颜色: 0无 1红 2绿 3蓝
 
 static void CardCommand_Update(void)
@@ -213,13 +213,13 @@ static void CardCommand_Update(void)
     Car_Speed_X = 0.0f;
     switch(card_active)
     {
-        case 1u:                         // 红: 前进
+        case 1u:                         // 红: 停止
+            Car_Speed_Y = 0.0f;
+            color_track_yaw_cmd = 0.0f;
+            break;
+        case 2u:                         // 绿: 前进
             color_track_yaw_cmd = 0.0f;
             Car_Speed_Y = CARD_FWD_SPEED;
-            break;
-        case 2u:                         // 绿: 后退
-            color_track_yaw_cmd = 0.0f;
-            Car_Speed_Y = -CARD_BACK_SPEED;
             break;
         case 3u:                         // 蓝: 原地旋转
             Car_Speed_Y = 0.0f;
