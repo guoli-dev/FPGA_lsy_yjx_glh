@@ -595,45 +595,57 @@ module gamma_96 #(
         gam8(I_tdata[47:40]), gam8(I_tdata[39:32]), gam8(I_tdata[31:24]),
         gam8(I_tdata[23:16]), gam8(I_tdata[15:8]),  gam8(I_tdata[7:0])
     };
+    // ---- saturation, 2026-11-15 -------------------------------------------
+    // Formula taken from the reference project (fpga-vision-servo-ab), which
+    // writes the same thing as   sum = 16*C + (C-Y)*K  ->  out = C + (C-Y)*K/16
+    //
+    //   Y = (R + 2G + B) >> 2   green-weighted luma, NOT (R+G+B)>>2.
+    //                           The old mid = (R+G+B)>>2 is only 0.75 of the
+    //                           true mean, so every channel sat above it and the
+    //                           whole picture was lifted ~9% (a grey 128 came
+    //                           out at 140). That lift is what read as washed
+    //                           out, and it also cost contrast everywhere.
+    //
+    // Two deliberate differences from the reference:
+    //   * they spend 12 DSPs (pre-subtract, multiply and post-add inside one
+    //     DSP per channel). SAT_K is a compile-time constant here, so the
+    //     multiply folds into a single add and the stage still costs no DSP.
+    //   * their clamp decodes the DSP accumulator overflow bits. Here the sum
+    //     is a small unsigned number and both ends are clamped explicitly, so
+    //     a dark channel can never wrap up into white the way the previous
+    //     version did.
+    localparam [4:0] SAT_K = 5'd6;      // boost = SAT_K/16 (6 -> 37.5 %), must be >= 0
 
-    // 2026-11-13 方案 A：饱和度增强。链路里原本完全没有饱和度这一级，
-    // 而 AWB 是灰世界（会把画面平均拉成中性），叠加起来就是颜色发灰发淡。
-    //     mid = (r + g + b) >> 2          （用 >>2 代替 /3，省一个除法）
-    //     out = c + ((c - mid) >> 2)      （每个通道离灰值再远 25%）
-    // 纯移位加法，0 乘法器；放在 gamma 之后、算法分支之前，显示和识别共用。
     function [7:0] sat8;
         input [7:0] c;
-        input [9:0] mid;
+        input [7:0] y;
         reg   [9:0] d;
-        reg   [9:0] t;
+        reg   [9:0] p;
+        reg   [9:0] s;
         begin
-            // d = |c - mid|, boost = d*3/8 (37.5%). Both shifts are parenthesised:
-            // Verilog gives + higher precedence than >>, so (d >> 2) + (d >> 3).
-            if ({2'b0, c} >= mid) begin
-                d = {2'b0, c} - mid;
-                t = {2'b0, c} + (d >> 2) + (d >> 3);
+            if (c >= y) begin
+                d = {2'b0, c} - {2'b0, y};
+                p = (d * SAT_K) >> 4;                 // d * 6 = (d<<2)+(d<<1)
+                s = {2'b0, c} + p;
+                sat8 = (s > 10'd255) ? 8'hff : s[7:0];
             end else begin
-                d = mid - {2'b0, c};
-                // clamp the low side: the old code let this subtraction wrap in
-                // 10 bits and then the >255 clamp turned it into full white.
-                t = (({2'b0, c} > ((d >> 2) + (d >> 3)))
-                     ? ({2'b0, c} - ((d >> 2) + (d >> 3)))
-                     : 10'd0);
+                d = {2'b0, y} - {2'b0, c};
+                p = (d * SAT_K) >> 4;
+                sat8 = ({2'b0, c} > p) ? ({2'b0, c} - p) : 8'd0;
             end
-            sat8 = (t > 10'd255) ? 8'hff : t[7:0];
         end
     endfunction
 
-    wire [9:0] S_m0 = ({2'b0,S_gam[95:88]} + {2'b0,S_gam[87:80]} + {2'b0,S_gam[79:72]}) >> 2;
-    wire [9:0] S_m1 = ({2'b0,S_gam[71:64]} + {2'b0,S_gam[63:56]} + {2'b0,S_gam[55:48]}) >> 2;
-    wire [9:0] S_m2 = ({2'b0,S_gam[47:40]} + {2'b0,S_gam[39:32]} + {2'b0,S_gam[31:24]}) >> 2;
-    wire [9:0] S_m3 = ({2'b0,S_gam[23:16]} + {2'b0,S_gam[15: 8]} + {2'b0,S_gam[ 7: 0]}) >> 2;
+    wire [9:0] S_y0 = ({2'b0,S_gam[95:88]} + {1'b0,S_gam[87:80],1'b0} + {2'b0,S_gam[79:72]}) >> 2;
+    wire [9:0] S_y1 = ({2'b0,S_gam[71:64]} + {1'b0,S_gam[63:56],1'b0} + {2'b0,S_gam[55:48]}) >> 2;
+    wire [9:0] S_y2 = ({2'b0,S_gam[47:40]} + {1'b0,S_gam[39:32],1'b0} + {2'b0,S_gam[31:24]}) >> 2;
+    wire [9:0] S_y3 = ({2'b0,S_gam[23:16]} + {1'b0,S_gam[15: 8],1'b0} + {2'b0,S_gam[ 7: 0]}) >> 2;
 
     wire [95:0] S_sat = {
-        sat8(S_gam[95:88], S_m0), sat8(S_gam[87:80], S_m0), sat8(S_gam[79:72], S_m0),
-        sat8(S_gam[71:64], S_m1), sat8(S_gam[63:56], S_m1), sat8(S_gam[55:48], S_m1),
-        sat8(S_gam[47:40], S_m2), sat8(S_gam[39:32], S_m2), sat8(S_gam[31:24], S_m2),
-        sat8(S_gam[23:16], S_m3), sat8(S_gam[15: 8], S_m3), sat8(S_gam[ 7: 0], S_m3)
+        sat8(S_gam[95:88], S_y0[7:0]), sat8(S_gam[87:80], S_y0[7:0]), sat8(S_gam[79:72], S_y0[7:0]),
+        sat8(S_gam[71:64], S_y1[7:0]), sat8(S_gam[63:56], S_y1[7:0]), sat8(S_gam[55:48], S_y1[7:0]),
+        sat8(S_gam[47:40], S_y2[7:0]), sat8(S_gam[39:32], S_y2[7:0]), sat8(S_gam[31:24], S_y2[7:0]),
+        sat8(S_gam[23:16], S_y3[7:0]), sat8(S_gam[15: 8], S_y3[7:0]), sat8(S_gam[ 7: 0], S_y3[7:0])
     };
 
     always @(posedge I_clk or negedge I_rst_n) begin
