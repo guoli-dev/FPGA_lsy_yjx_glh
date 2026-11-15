@@ -553,6 +553,7 @@ module gamma_96 #(
     function [7:0] gam8;
         input [7:0] vin;
         reg   [8:0] v;
+        reg   [9:0] d;
         reg   [9:0] t;
         reg   [9:0] x;
         begin
@@ -603,12 +604,22 @@ module gamma_96 #(
     function [7:0] sat8;
         input [7:0] c;
         input [9:0] mid;
+        reg   [9:0] d;
         reg   [9:0] t;
         begin
-            if ({2'b0, c} >= mid)
-                t = {2'b0, c} + (({2'b0, c} - mid) >> 2);
-            else
-                t = {2'b0, c} - ((mid - {2'b0, c}) >> 2);
+            // d = |c - mid|, boost = d*3/8 (37.5%). Both shifts are parenthesised:
+            // Verilog gives + higher precedence than >>, so (d >> 2) + (d >> 3).
+            if ({2'b0, c} >= mid) begin
+                d = {2'b0, c} - mid;
+                t = {2'b0, c} + (d >> 2) + (d >> 3);
+            end else begin
+                d = mid - {2'b0, c};
+                // clamp the low side: the old code let this subtraction wrap in
+                // 10 bits and then the >255 clamp turned it into full white.
+                t = (({2'b0, c} > ((d >> 2) + (d >> 3)))
+                     ? ({2'b0, c} - ((d >> 2) + (d >> 3)))
+                     : 10'd0);
+            end
             sat8 = (t > 10'd255) ? 8'hff : t[7:0];
         end
     endfunction
