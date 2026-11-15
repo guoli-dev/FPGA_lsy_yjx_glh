@@ -297,6 +297,10 @@ color_detect_96 #(
                                  //   不再是包围盒的硬门 —— 零散点会变成像素数极少的
                                  //   轨迹, 帧末被 AREA_TH 直接淘汰。所以它可以从 4
                                  //   退回 3/2, 不会再把远处的绿目标整帧门掉。
+    .I_min_bright      (I_min_bright),
+    .I_margin_r        (I_margin_r  ),
+    .I_margin_g        (I_margin_g  ),
+    .I_margin_b        (I_margin_b  ),
     .AREA_TH           (300 ),   // **单个连通域**小于 300 像素不报
     .MIN_RUN           (3   ),   // 2026-10-19: 2->3, horizontal erosion for the bbox only
     .EDGE_MASK_X       (32  ),   // 2026-11-14: 80->32。四角盲区每角 3600px2 -> 576px2
@@ -326,10 +330,6 @@ color_detect_96 #(
     .I_tuser     (gam_tuser),
     .I_tvalid    (gam_tvalid),
     .I_tdata     (gam_tdata),
-    .I_min_bright(I_min_bright),
-    .I_margin_r  (I_margin_r  ),
-    .I_margin_g  (I_margin_g  ),
-    .I_margin_b  (I_margin_b  ),
     .O_det_boxes (det_boxes_raw ),
     .O_det_boxes2(det_boxes2),
     .O_det_boxes3(det_boxes3),
@@ -1019,16 +1019,9 @@ module color_detect_96 #(
     wire [7:0] sav_g = gav[9:2];
     wire [7:0] sav_b = bav[9:2];
 
-    // ---- 2026-11-16: 两档判据 (强种子 + 弱支持) ---------------------------
-    // hit = 主色占优(不含边距) -> 弱支持, 反光/暗色部分也能进;
-    // strong = 主色占优 + 可调边距 -> 强种子, 只有够纯的才算。
-    // 连通域框必须含至少一个 strong 像素才报 (color_box_ccl_96 的 T_seed 门控)。
-    wire hr = (sav_r >= I_min_bright) && (sav_r >= sav_g) && (sav_r >= sav_b);
-    wire hg = (sav_g >= I_min_bright) && (sav_g >= sav_r) && (sav_g >= sav_b);
-    wire hb = (sav_b >= I_min_bright) && (sav_b >= sav_r) && (sav_b >= sav_g);
-    wire hr_s = is_red  (sav_r,sav_g,sav_b);   // strong seed (with margin)
-    wire hg_s = is_green(sav_r,sav_g,sav_b);
-    wire hb_s = is_blue (sav_r,sav_g,sav_b);
+    wire hr = is_red  (sav_r,sav_g,sav_b);
+    wire hg = is_green(sav_r,sav_g,sav_b);
+    wire hb = is_blue (sav_r,sav_g,sav_b);
 
     // I_hit[3] = 组内第 0 个像素(最左), I_hit[0] = 第 3 个像素
     // 现在整组同判，4 位一起置位 —— CCL 的 MIN_RUN=3 因此等价于"组被判中"。
@@ -1037,22 +1030,15 @@ module color_detect_96 #(
     // 当前 slice 94.2% 塞不下；水平 3 点只要 6 个寄存器，能去掉"孤立的单组
     // 命中"，且不缩小目标（中值不改变长度 >= 2 的游程）。
     reg hr1, hr2, hg1, hg2, hb1, hb2;
-    reg hrs1, hrs2, hgs1, hgs2, hbs1, hbs2;
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n) begin
             hr1 <= 1'b0; hr2 <= 1'b0;
             hg1 <= 1'b0; hg2 <= 1'b0;
             hb1 <= 1'b0; hb2 <= 1'b0;
-            hrs1 <= 1'b0; hrs2 <= 1'b0;
-            hgs1 <= 1'b0; hgs2 <= 1'b0;
-            hbs1 <= 1'b0; hbs2 <= 1'b0;
         end else if (I_tvalid) begin
             hr1 <= hr;  hr2 <= hr1;
             hg1 <= hg;  hg2 <= hg1;
             hb1 <= hb;  hb2 <= hb1;
-            hrs1 <= hr_s; hrs2 <= hrs1;
-            hgs1 <= hg_s; hgs2 <= hgs1;
-            hbs1 <= hb_s; hbs2 <= hbs1;
         end
     end
 
@@ -1060,9 +1046,6 @@ module color_detect_96 #(
     wire hr_m = (hr & hr1) | (hr & hr2) | (hr1 & hr2);
     wire hg_m = (hg & hg1) | (hg & hg2) | (hg1 & hg2);
     wire hb_m = (hb & hb1) | (hb & hb2) | (hb1 & hb2);
-    wire hr_s_m = (hr_s & hrs1) | (hr_s & hrs2) | (hrs1 & hrs2);
-    wire hg_s_m = (hg_s & hgs1) | (hg_s & hgs2) | (hgs1 & hgs2);
-    wire hb_s_m = (hb_s & hbs1) | (hb_s & hbs2) | (hbs1 & hbs2);
     wire [3:0] hit_r = {4{hr_m}};
     wire [3:0] hit_g = {4{hg_m}};
     wire [3:0] hit_b = {4{hb_m}};
@@ -1103,21 +1086,21 @@ module color_detect_96 #(
             vx <= (vx == 9'd319) ? 9'd0 : (vx + 9'd1);
     end
 
-    reg [5:0] ln1 [0:319];      // previous line     : {g, r, b, g_s, r_s, b_s}
-    reg [5:0] ln2 [0:319];      // line before that
-    reg [5:0] ov1, ov2;         // synchronous read-out at vx
+    reg [2:0] ln1 [0:319];      // previous line     : {g, r, b}
+    reg [2:0] ln2 [0:319];      // line before that
+    reg [2:0] ov1, ov2;         // synchronous read-out at vx
 
     always @(posedge I_clk) begin
         ov1 <= ln1[vx];
         ov2 <= ln2[vx];
         if (I_tvalid) begin
             ln2[vx] <= ln1[vx];             // read-before-write gives the old value
-            ln1[vx] <= {hg_m, hr_m, hb_m, hg_s_m, hr_s_m, hb_s_m};  // bit5=g bit4=r bit3=b bit2=g_s bit1=r_s bit0=b_s
+            ln1[vx] <= {hg_m, hr_m, hb_m};   // bit2=g  bit1=r  bit0=b  (keep in sync with vmed_q_path)
         end
     end
 
-    reg [5:0] cur_d;
-    always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m, hg_s_m, hr_s_m, hb_s_m};    // same packing as ln1
+    reg [2:0] cur_d;
+    always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m};    // same packing as ln1
 
     // median of three = at least two true
     // BYPASS_VMED is an A/B switch: 1 = feed the CCL from the horizontal median
@@ -1129,25 +1112,19 @@ module color_detect_96 #(
     //   vertical median - cur_d / ov1 / ov2 are all registered, so the median
     //                     function itself is already 1 clock deep;
     //   bypass          - hr_m/hg_m/hb_m are combinational, so register them.
-    reg [5:0] hmed_q;
-    always @(posedge I_clk) hmed_q <= {hg_m, hr_m, hb_m, hg_s_m, hr_s_m, hb_s_m};
+    reg [2:0] hmed_q;
+    always @(posedge I_clk) hmed_q <= {hg_m, hr_m, hb_m};
 
-    wire [5:0] vmed_q_path = {
-        (cur_d[5] & ov1[5]) | (cur_d[5] & ov2[5]) | (ov1[5] & ov2[5]),   // g = bit5
-        (cur_d[4] & ov1[4]) | (cur_d[4] & ov2[4]) | (ov1[4] & ov2[4]),   // r = bit4
-        (cur_d[3] & ov1[3]) | (cur_d[3] & ov2[3]) | (ov1[3] & ov2[3]),   // b = bit3
-        (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]),   // g_s = bit2
-        (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]),   // r_s = bit1
-        (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0])    // b_s = bit0
+    wire [2:0] vmed_q_path = {
+        (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]),   // g = bit2
+        (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]),   // r = bit1
+        (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0])    // b = bit0
     };
-    wire [5:0] vmed_sel = BYPASS_VMED ? hmed_q : vmed_q_path;
+    wire [2:0] vmed_sel   = BYPASS_VMED ? hmed_q : vmed_q_path;
 
-    wire [3:0] hit_g_r = {4{vmed_sel[5]}};
-    wire [3:0] hit_r_r = {4{vmed_sel[4]}};
-    wire [3:0] hit_b_r = {4{vmed_sel[3]}};
-    wire [3:0] hit_s_g = {4{vmed_sel[2]}};   // green strong seed
-    wire [3:0] hit_s_r = {4{vmed_sel[1]}};   // red strong seed
-    wire [3:0] hit_s_b = {4{vmed_sel[0]}};   // blue strong seed
+    wire [3:0] hit_r_r = {4{vmed_sel[1]}};
+    wire [3:0] hit_g_r = {4{vmed_sel[2]}};
+    wire [3:0] hit_b_r = {4{vmed_sel[0]}};
 
     reg       tuser_r,  tvalid_r;
     always @(posedge I_clk or negedge I_rst_n) begin
@@ -1179,7 +1156,7 @@ module color_detect_96 #(
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_r (
         .I_clk(I_clk), .I_rst_n(I_rst_n), .I_tuser(tuser_r), .I_tvalid(tvalid_r),
-        .I_hit(hit_r_r), .I_strong(hit_s_r), .O_boxes(Ob_r)
+        .I_hit(hit_r_r), .O_boxes(Ob_r)
     );
 
     color_box_ccl_96 #(
@@ -1189,7 +1166,7 @@ module color_detect_96 #(
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_g (
         .I_clk(I_clk), .I_rst_n(I_rst_n), .I_tuser(tuser_r), .I_tvalid(tvalid_r),
-        .I_hit(hit_g_r), .I_strong(hit_s_g), .O_boxes(Ob_g)
+        .I_hit(hit_g_r), .O_boxes(Ob_g)
     );
 
     color_box_ccl_96 #(
@@ -1199,7 +1176,7 @@ module color_detect_96 #(
         .NTRK(NTRK), .GAPX(GAPX), .GAPY(GAPY)
     ) u_box_b (
         .I_clk(I_clk), .I_rst_n(I_rst_n), .I_tuser(tuser_r), .I_tvalid(tvalid_r),
-        .I_hit(hit_b_r), .I_strong(hit_s_b), .O_boxes(Ob_b)
+        .I_hit(hit_b_r), .O_boxes(Ob_b)
     );
 
     // 每色取一个 rank, 按原来的 {蓝, 绿, 红} 顺序拼成 192 位
@@ -2038,7 +2015,6 @@ module color_box_ccl_96 #(
     input             I_tuser,
     input             I_tvalid,
     input      [3:0]  I_hit,      // I_hit[3]=组内第 0 个像素(最左)
-    input      [3:0]  I_strong,   // strong seed mask (same packing as I_hit); box valid needs >=1 strong pixel
     // 2026-10-11: 单框 -> 4 个框。{rank4, rank3, rank2, rank1}, 每 rank 64 位,
     // 格式与 color_box_96 完全一致:
     //   {cy[9:0], cx[10:0], valid, left[10:0], right[10:0], top[9:0], bottom[9:0]}
@@ -2088,7 +2064,6 @@ module color_box_ccl_96 #(
     reg [17:0] T_cnt [0:NTRK-1];
     reg [CNT_W-1:0] T_sx [0:NTRK-1], T_sy [0:NTRK-1];
     reg [9:0]  T_row [0:NTRK-1];       // 该轨迹最后一次被更新的行号
-    reg        T_seed[0:NTRK-1];       // 该轨迹是否含至少一个强种子像素
 
     // ---- 本组统计 ---------------------------------------------------------
     wire [10:0] base_x  = {x_grp, 2'b00};
@@ -2352,7 +2327,6 @@ module color_box_ccl_96 #(
                 T_cnt[k] <= 18'd0;
                 T_sx[k]  <= {CNT_W{1'b0}}; T_sy[k] <= {CNT_W{1'b0}};
                 T_row[k] <= 10'd0;
-                T_seed[k]<= 1'b0;
             end
             W1_x0 <= 11'd0; W1_x1 <= 11'd0; W1_y0 <= 10'd0; W1_y1 <= 10'd0;
             W2_x0 <= 11'd0; W2_x1 <= 11'd0; W2_y0 <= 10'd0; W2_y1 <= 10'd0;
@@ -2386,19 +2360,19 @@ module color_box_ccl_96 #(
     : mkbox(W1_on, W1_cnt, O_bx0, O_bx1, S_cx, O_by0, O_by1, S_cy) };
 
                 // (2) 锁存本帧排好序的 4 个 rank —— 此刻轨迹表里还是刚跑完那一帧的结果
-                W1_on  <= SRT1[4] & T_seed[SRT1[3:0]];  W1_cnt <= SRT1[22:5];
+                W1_on  <= SRT1[4];  W1_cnt <= SRT1[22:5];
                 if (W1_on && (W1_cnt >= AREA_TH)) begin
                     D_x0 <= O_bx0; D_x1 <= O_bx1; D_y0 <= O_by0; D_y1 <= O_by1;
                 end
                 W1_x0  <= T_x0[SRT1[3:0]];  W1_x1 <= T_x1[SRT1[3:0]];
                 W1_y0  <= T_y0[SRT1[3:0]];  W1_y1 <= T_y1[SRT1[3:0]];
-                W2_on  <= SRT2[4] & T_seed[SRT2[3:0]];  W2_cnt <= SRT2[22:5];
+                W2_on  <= SRT2[4];  W2_cnt <= SRT2[22:5];
                 W2_x0  <= T_x0[SRT2[3:0]];  W2_x1 <= T_x1[SRT2[3:0]];
                 W2_y0  <= T_y0[SRT2[3:0]];  W2_y1 <= T_y1[SRT2[3:0]];
-                W3_on  <= SRT3[4] & T_seed[SRT3[3:0]];  W3_cnt <= SRT3[22:5];
+                W3_on  <= SRT3[4];  W3_cnt <= SRT3[22:5];
                 W3_x0  <= T_x0[SRT3[3:0]];  W3_x1 <= T_x1[SRT3[3:0]];
                 W3_y0  <= T_y0[SRT3[3:0]];  W3_y1 <= T_y1[SRT3[3:0]];
-                W4_on  <= SRT4[4] & T_seed[SRT4[3:0]];  W4_cnt <= SRT4[22:5];
+                W4_on  <= SRT4[4];  W4_cnt <= SRT4[22:5];
                 W4_x0  <= T_x0[SRT4[3:0]];  W4_x1 <= T_x1[SRT4[3:0]];
                 W4_y0  <= T_y0[SRT4[3:0]];  W4_y1 <= T_y1[SRT4[3:0]];
                 // rank1 的 Σx/Σy/总面积 (只有它算真质心)
@@ -2411,7 +2385,6 @@ module color_box_ccl_96 #(
                     T_cnt[k] <= 18'd0;
                     T_sx[k]  <= {CNT_W{1'b0}};
                     T_sy[k]  <= {CNT_W{1'b0}};
-                    T_seed[k]<= 1'b0;
                 end
 
                 // 除法**推到下一拍再装载** —— 因为被除数和除数是本拍刚锁存的
@@ -2467,7 +2440,6 @@ module color_box_ccl_96 #(
                     T_sx[m_idx]  <= T_sx[m_idx] + {14'd0, grp_sum_x};
                     T_sy[m_idx]  <= T_sy[m_idx] + {15'd0, grp_sum_y};
                     T_row[m_idx] <= y_pos;
-                    T_seed[m_idx]<= T_seed[m_idx] | (|I_strong);
                 end else if (f_hit) begin
                     // 没有可延续的 -> 开一条新轨迹 (表满就丢掉这个组)
                     T_on[f_idx]  <= 1'b1;
@@ -2479,7 +2451,6 @@ module color_box_ccl_96 #(
                     T_sx[f_idx]  <= {14'd0, grp_sum_x};
                     T_sy[f_idx]  <= {15'd0, grp_sum_y};
                     T_row[f_idx] <= y_pos;
-                    T_seed[f_idx]<= |I_strong;
                 end
             end
 
