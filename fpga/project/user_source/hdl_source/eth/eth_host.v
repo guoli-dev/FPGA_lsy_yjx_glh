@@ -1,11 +1,12 @@
 `timescale 1ns / 1ps
 // eth_host: Ethernet(UDP) host-computer interface for HX1P35A.
 // Downlink (host -> FPGA, udp dst port 6002):
-//   [0]=cmd, [1]=arg
+//   [0]=cmd, [1]=arg, [2]=arg2
 //     0x01 = set display mode, arg = 0..4
 //     0x02 = request status now
 //     0x03 = request compact color telemetry now
 //     0x04 = request motion bounding-box telemetry now
+//     0x05 = set color tune: arg=brightness, arg2={2'b00, blue_margin, green_margin, red_margin}
 // Uplink status (FPGA -> host, udp dst port 6001), 12 bytes:
 //   AA mode fps_lo fps_hi link frame_lo frame_hi latency_lo latency_hi motion_lo motion_hi 55
 // Uplink color telemetry, 11 bytes:
@@ -35,7 +36,9 @@ module eth_host (
     input  wire [63:0] I_mot_box,         // motion bounding box (isp_top O_mot_box)
 
     output reg         O_mode_toggle,    // toggles on each set-mode cmd (clk_125)
-    output reg  [2:0]  O_mode_val        // mode value (clk_125)
+    output reg  [2:0]  O_mode_val,       // mode value (clk_125)
+    output reg         O_tune_toggle,    // toggles on each set-tune cmd (clk_125)
+    output reg  [15:0] O_tune_val        // [7:0]=brightness [9:8]=red margin [11:10]=green [13:12]=blue
 );
 
 // ---------------------------------------------------------------------------
@@ -200,6 +203,7 @@ end
 // ---------------------------------------------------------------------------
 reg rudp_valid_d;
 reg [7:0] rx_b0;
+reg [7:0] rx_b1;
 reg [1:0] rx_cnt;
 wire sop = R_udp_valid & ~rudp_valid_d;
 wire rx_req_stat  = sop & (R_udp_data == 8'h02);
@@ -210,21 +214,33 @@ always @(posedge clk_125 or posedge reset) begin
     if(reset) begin
         rudp_valid_d <= 1'b0;
         rx_b0        <= 8'd0;
+        rx_b1        <= 8'd0;
         rx_cnt       <= 2'd0;
         O_mode_val   <= 3'd0;
         O_mode_toggle<= 1'b0;
+        O_tune_val   <= 16'd0;
+        O_tune_toggle<= 1'b0;
     end else begin
         rudp_valid_d <= R_udp_valid;
         if(sop) begin
             rx_b0  <= R_udp_data;         // cmd byte
             rx_cnt <= 2'd1;
         end else if(R_udp_valid && rx_cnt == 2'd1) begin
-            // byte1 = arg; execute set-mode
+            // byte1 = first arg; 2-byte set-mode executes here
+            rx_b1 <= R_udp_data;
             if(rx_b0 == 8'h01 && R_udp_data <= 8'd4) begin
                 O_mode_val    <= R_udp_data[2:0];
                 O_mode_toggle <= ~O_mode_toggle;
             end
             rx_cnt <= 2'd2;
+        end else if(R_udp_valid && rx_cnt == 2'd2) begin
+            // byte2 = second arg; 3-byte set-tune executes here
+            if(rx_b0 == 8'h05) begin
+                // arg=brightness (rx_b1), arg2={2'b00, blue_margin, green_margin, red_margin}
+                O_tune_val    <= {2'b00, R_udp_data[5:4], R_udp_data[3:2], R_udp_data[1:0], rx_b1};
+                O_tune_toggle <= ~O_tune_toggle;
+            end
+            rx_cnt <= 2'd3;
         end
     end
 end
