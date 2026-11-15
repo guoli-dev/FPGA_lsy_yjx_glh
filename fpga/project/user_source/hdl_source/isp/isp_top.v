@@ -933,7 +933,7 @@ module color_detect_96 #(
             //   the tint assumes. 5/32 is a 17% relaxation, one step short of
             //   2/16=12.5%, so olive/yellow still stays out.
             //   Cost unchanged: two shifts and one add, same as before.
-            m = (g >> 3) + (g >> 5);
+            m = (g >> 3);                    // 2/16 = 12.5 %
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= m) && ((g - b) >= m);
         end
@@ -1648,7 +1648,7 @@ module classify_overlay_96 #(
         reg [7:0] g_m;
         begin
             // must match color_detect_96 exactly, otherwise this debug view lies
-            g_m = (g >> 3) + (g >> 5);          // 5/32 = 15.6%, must match the detector
+            g_m = (g >> 3);                     // 2/16 = 12.5 %, must match the detector
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= g_m) && ((g - b) >= g_m);
         end
