@@ -926,11 +926,14 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg   [7:0] m;
         begin
-            // 2026-11-14: 5/16 -> 3/16。AWB 是灰世界估计, 会把 R/B 增益抬到 sum_g/sum_r,
-            //   专门用来中和"传感器原生偏绿"。绿表面的相对饱和度因此被吃掉, 而红/蓝被抬高后
-            //   相对余量反而变大 —— 所以只放松绿色这一条。R 允许到 G 的 81.25% (原 68.75%)。
-            //   面积不变(还是两次移位一次加), 亮度门与 g>=r && g>=b 主导条件均未改动。
-            m = (g >> 3) + (g >> 4);
+            // 2026-11-15: 3/16 -> 5/32 (18.75% -> 15.6%). The mode-7 overlay
+            //   showed the gate fails on green objects near the frame edge even
+            //   though the radial tint there REDUCES R and B (which should widen
+            //   g-r, not narrow it). So the residual edge cast is stronger than
+            //   the tint assumes. 5/32 is a 17% relaxation, one step short of
+            //   2/16=12.5%, so olive/yellow still stays out.
+            //   Cost unchanged: two shifts and one add, same as before.
+            m = (g >> 3) + (g >> 5);
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= m) && ((g - b) >= m);
         end
@@ -1645,7 +1648,7 @@ module classify_overlay_96 #(
         reg [7:0] g_m;
         begin
             // must match color_detect_96 exactly, otherwise this debug view lies
-            g_m = (g >> 3) + (g >> 4);          // 3/16 = 18.75%
+            g_m = (g >> 3) + (g >> 5);          // 5/32 = 15.6%, must match the detector
             is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
                        ((g - r) >= g_m) && ((g - b) >= g_m);
         end
