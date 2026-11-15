@@ -632,58 +632,49 @@ module gamma_96 #(
         gam8(I_tdata[47:40]), gam8(I_tdata[39:32]), gam8(I_tdata[31:24]),
         gam8(I_tdata[23:16]), gam8(I_tdata[15:8]),  gam8(I_tdata[7:0])
     };
-    // ---- saturation, 2026-11-15 -------------------------------------------
-    // Formula taken from the reference project (fpga-vision-servo-ab), which
-    // writes the same thing as   sum = 16*C + (C-Y)*K  ->  out = C + (C-Y)*K/16
+    // ---- saturation, 2026-11-15 (reverted to the mid-based form) -----------
+    // The green-weighted luma version Y=(R+2G+B)>>2 was mathematically cleaner
+    // but it also removed the ~9 % brightness lift the old mid form produced,
+    // and with it the detection margin for ALL THREE colours - red and blue
+    // visibly got worse on the board. Restored:
     //
-    //   Y = (R + 2G + B) >> 2   green-weighted luma, NOT (R+G+B)>>2.
-    //                           The old mid = (R+G+B)>>2 is only 0.75 of the
-    //                           true mean, so every channel sat above it and the
-    //                           whole picture was lifted ~9% (a grey 128 came
-    //                           out at 140). That lift is what read as washed
-    //                           out, and it also cost contrast everywhere.
+    //     mid = (R + G + B) >> 2      (0.75 of the true mean: brightens)
+    //     out = C + (C - mid) * 3/8
     //
-    // Two deliberate differences from the reference:
-    //   * they spend 12 DSPs (pre-subtract, multiply and post-add inside one
-    //     DSP per channel). Here the boost is written out as shifts.
-    //     Do NOT write "d * K" even when K is a localparam: TD still builds a
-    //     real multiplier and maps it to a DSP (measured: 28 -> 48 DSPs, 120 %
-    //     of the device, the fit fails). 6/16 = 1/4 + 1/8 keeps it shift-add.
-    //   * their clamp decodes the DSP accumulator overflow bits. Here the sum
-    //     is a small unsigned number and both ends are clamped explicitly, so
-    //     a dark channel can never wrap up into white the way the previous
-    //     version did.
-
+    // Kept from the rework: the two-sided clamp. The old code subtracted in
+    // 10-bit unsigned, wrapped, and the >255 clamp turned the wrap into full
+    // white (measured: 5.8 % of all channels; e.g. cyan (20,200,200) became
+    // (255,223,223)).
     function [7:0] sat8;
         input [7:0] c;
-        input [7:0] y;
+        input [9:0] mid;
         reg   [9:0] d;
         reg   [9:0] p;
         reg   [9:0] s;
         begin
-            if (c >= y) begin
-                d = {2'b0, c} - {2'b0, y};
-                p = (d >> 2) + (d >> 3);              // 6/16 = 1/4 + 1/8, shift-add
+            if ({2'b0, c} >= mid) begin
+                d = {2'b0, c} - mid;
+                p = (d >> 2) + (d >> 3);              // 3/8 = 1/4 + 1/8, shift-add
                 s = {2'b0, c} + p;
                 sat8 = (s > 10'd255) ? 8'hff : s[7:0];
             end else begin
-                d = {2'b0, y} - {2'b0, c};
-                p = (d >> 2) + (d >> 3);              // 6/16 = 1/4 + 1/8, shift-add
+                d = mid - {2'b0, c};
+                p = (d >> 2) + (d >> 3);
                 sat8 = ({2'b0, c} > p) ? ({2'b0, c} - p) : 8'd0;
             end
         end
     endfunction
 
-    wire [9:0] S_y0 = ({2'b0,S_gam[95:88]} + {1'b0,S_gam[87:80],1'b0} + {2'b0,S_gam[79:72]}) >> 2;
-    wire [9:0] S_y1 = ({2'b0,S_gam[71:64]} + {1'b0,S_gam[63:56],1'b0} + {2'b0,S_gam[55:48]}) >> 2;
-    wire [9:0] S_y2 = ({2'b0,S_gam[47:40]} + {1'b0,S_gam[39:32],1'b0} + {2'b0,S_gam[31:24]}) >> 2;
-    wire [9:0] S_y3 = ({2'b0,S_gam[23:16]} + {1'b0,S_gam[15: 8],1'b0} + {2'b0,S_gam[ 7: 0]}) >> 2;
+    wire [9:0] S_m0 = ({2'b0,S_gam[95:88]} + {2'b0,S_gam[87:80]} + {2'b0,S_gam[79:72]}) >> 2;
+    wire [9:0] S_m1 = ({2'b0,S_gam[71:64]} + {2'b0,S_gam[63:56]} + {2'b0,S_gam[55:48]}) >> 2;
+    wire [9:0] S_m2 = ({2'b0,S_gam[47:40]} + {2'b0,S_gam[39:32]} + {2'b0,S_gam[31:24]}) >> 2;
+    wire [9:0] S_m3 = ({2'b0,S_gam[23:16]} + {2'b0,S_gam[15: 8]} + {2'b0,S_gam[ 7: 0]}) >> 2;
 
     wire [95:0] S_sat = {
-        sat8(S_gam[95:88], S_y0[7:0]), sat8(S_gam[87:80], S_y0[7:0]), sat8(S_gam[79:72], S_y0[7:0]),
-        sat8(S_gam[71:64], S_y1[7:0]), sat8(S_gam[63:56], S_y1[7:0]), sat8(S_gam[55:48], S_y1[7:0]),
-        sat8(S_gam[47:40], S_y2[7:0]), sat8(S_gam[39:32], S_y2[7:0]), sat8(S_gam[31:24], S_y2[7:0]),
-        sat8(S_gam[23:16], S_y3[7:0]), sat8(S_gam[15: 8], S_y3[7:0]), sat8(S_gam[ 7: 0], S_y3[7:0])
+        sat8(S_gam[95:88], S_m0), sat8(S_gam[87:80], S_m0), sat8(S_gam[79:72], S_m0),
+        sat8(S_gam[71:64], S_m1), sat8(S_gam[63:56], S_m1), sat8(S_gam[55:48], S_m1),
+        sat8(S_gam[47:40], S_m2), sat8(S_gam[39:32], S_m2), sat8(S_gam[31:24], S_m2),
+        sat8(S_gam[23:16], S_m3), sat8(S_gam[15: 8], S_m3), sat8(S_gam[ 7: 0], S_m3)
     };
 
     always @(posedge I_clk or negedge I_rst_n) begin
