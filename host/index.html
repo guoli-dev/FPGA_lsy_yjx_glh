@@ -786,12 +786,8 @@
     /* ⑤ 顶部连接状态点：连上后变绿并常亮（配合原有呼吸动画） */
     .dot.online, #headerDot.online { background: #34d399; }
 
-    /* ⑥ 交互记录新条目：淡入，别突然蹦出来 */
-    .log > * { animation: logfade .35s ease-out both; }
-    @keyframes logfade {
-      from { opacity: 0; transform: translateY(3px); }
-      to   { opacity: 1; transform: none; }
-    }
+    /* ⑥ 交互记录：静态显示，不闪不跳 */
+    .log > * { animation: none; }
 
     /* ⑦ 标题下的渐变线：轻微流动 */
     .title-group::after {
