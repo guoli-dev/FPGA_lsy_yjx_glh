@@ -1024,7 +1024,7 @@ module color_detect_96 #(
     // plain (no ram_style attribute) and let TD infer DRAM.
     //
     // Latency bookkeeping: ov1/ov2 and cur_d all become valid at t+1 relative to
-    // the hit, so hr_v/hg_v/hb_v are ready exactly 1 cycle after the hit - the
+    // the hit, so vmed_q_path is ready exactly 1 cycle after the hit - the
     // same delay the old hit register had. tuser_r/tvalid_r stay 1 cycle, so the
     // alignment into the CCL is unchanged.
     //
@@ -1046,7 +1046,7 @@ module color_detect_96 #(
         ov2 <= ln2[vx];
         if (I_tvalid) begin
             ln2[vx] <= ln1[vx];             // read-before-write gives the old value
-            ln1[vx] <= {hg_m, hr_m, hb_m};   // bit2=g  bit1=r  bit0=b  (keep in sync with hr_v/hg_v/hb_v)
+            ln1[vx] <= {hg_m, hr_m, hb_m};   // bit2=g  bit1=r  bit0=b  (keep in sync with vmed_q_path)
         end
     end
 
@@ -1054,13 +1054,28 @@ module color_detect_96 #(
     always @(posedge I_clk) cur_d <= {hg_m, hr_m, hb_m};    // same packing as ln1
 
     // median of three = at least two true
-    wire hr_v = (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]);
-    wire hg_v = (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]);
-    wire hb_v = (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0]);
+    // BYPASS_VMED is an A/B switch: 1 = feed the CCL from the horizontal median
+    // only (the behaviour before the vertical stage existed), 0 = full cross
+    // median. Set to 0 to re-enable the vertical stage.
+    localparam BYPASS_VMED = 1'b1;
 
-    wire [3:0] hit_r_r = {4{hr_v}};
-    wire [3:0] hit_g_r = {4{hg_v}};
-    wire [3:0] hit_b_r = {4{hb_v}};
+    // Both paths must reach the CCL with exactly one clock of latency:
+    //   vertical median - cur_d / ov1 / ov2 are all registered, so the median
+    //                     function itself is already 1 clock deep;
+    //   bypass          - hr_m/hg_m/hb_m are combinational, so register them.
+    reg [2:0] hmed_q;
+    always @(posedge I_clk) hmed_q <= {hg_m, hr_m, hb_m};
+
+    wire [2:0] vmed_q_path = {
+        (cur_d[2] & ov1[2]) | (cur_d[2] & ov2[2]) | (ov1[2] & ov2[2]),   // g = bit2
+        (cur_d[1] & ov1[1]) | (cur_d[1] & ov2[1]) | (ov1[1] & ov2[1]),   // r = bit1
+        (cur_d[0] & ov1[0]) | (cur_d[0] & ov2[0]) | (ov1[0] & ov2[0])    // b = bit0
+    };
+    wire [2:0] vmed_sel   = BYPASS_VMED ? hmed_q : vmed_q_path;
+
+    wire [3:0] hit_r_r = {4{vmed_sel[1]}};
+    wire [3:0] hit_g_r = {4{vmed_sel[2]}};
+    wire [3:0] hit_b_r = {4{vmed_sel[0]}};
 
     reg       tuser_r,  tvalid_r;
     always @(posedge I_clk or negedge I_rst_n) begin
