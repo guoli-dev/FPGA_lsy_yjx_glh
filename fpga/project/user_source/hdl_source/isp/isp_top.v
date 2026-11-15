@@ -297,10 +297,6 @@ color_detect_96 #(
                                  //   不再是包围盒的硬门 —— 零散点会变成像素数极少的
                                  //   轨迹, 帧末被 AREA_TH 直接淘汰。所以它可以从 4
                                  //   退回 3/2, 不会再把远处的绿目标整帧门掉。
-    .I_min_bright      (I_min_bright),
-    .I_margin_r        (I_margin_r  ),
-    .I_margin_g        (I_margin_g  ),
-    .I_margin_b        (I_margin_b  ),
     .AREA_TH           (300 ),   // **单个连通域**小于 300 像素不报
     .MIN_RUN           (3   ),   // 2026-10-19: 2->3, horizontal erosion for the bbox only
     .EDGE_MASK_X       (32  ),   // 2026-11-14: 80->32。四角盲区每角 3600px2 -> 576px2
@@ -330,6 +326,10 @@ color_detect_96 #(
     .I_tuser     (gam_tuser),
     .I_tvalid    (gam_tvalid),
     .I_tdata     (gam_tdata),
+    .I_min_bright(I_min_bright),
+    .I_margin_r  (I_margin_r  ),
+    .I_margin_g  (I_margin_g  ),
+    .I_margin_b  (I_margin_b  ),
     .O_det_boxes (det_boxes_raw ),
     .O_det_boxes2(det_boxes2),
     .O_det_boxes3(det_boxes3),
