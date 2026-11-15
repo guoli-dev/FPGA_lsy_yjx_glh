@@ -905,6 +905,15 @@
           </section>
 
           <section class="card">
+            <div class="head"><h2>颜色识别调参（下发 FPGA）</h2></div>
+            <div class="field"><span class="k">亮度门槛 0~255</span><input id="tBright" type="number" min="0" max="255" value="45" aria-label="颜色亮度门槛"></div>
+            <div class="field"><span class="k">红边距 0~3</span><input id="tRed" type="number" min="0" max="3" value="3" aria-label="红边距"></div>
+            <div class="field"><span class="k">绿边距 0~3</span><input id="tGreen" type="number" min="0" max="3" value="0" aria-label="绿边距"></div>
+            <div class="field"><span class="k">蓝边距 0~3</span><input id="tBlue" type="number" min="0" max="3" value="3" aria-label="蓝边距"></div>
+            <button class="btn" id="applyTune">应用并下发</button>
+          </section>
+
+          <section class="card">
             <div class="head"><h2>网络信息</h2></div>
             <div class="kv"><span class="k">电脑监听</span><span class="val">0.0.0.0 : 6001</span></div>
             <div class="kv"><span class="k">FPGA 目标</span><span class="val">192.168.137.2 : 6002</span></div>
@@ -1257,5 +1266,11 @@
     fetch("/params", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ loss_seconds: $("pLoss").value, min_fps: $("pFps").value,
         motion_limit: $("pLimit").value, focus: $("pFocus").value }) });
+  });
+
+  $("applyTune").addEventListener("click", () => {
+    fetch("/tune", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brightness: $("tBright").value, red: $("tRed").value,
+        green: $("tGreen").value, blue: $("tBlue").value }) });
   });
 </script>

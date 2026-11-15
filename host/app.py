@@ -14,6 +14,7 @@ from protocol import (
     MotionPacket,
     StatusPacket,
     encode_color_request,
+    encode_color_tune,
     encode_mode,
     encode_motion_request,
     encode_status_request,
@@ -104,6 +105,9 @@ class UdpWorker(threading.Thread):
         self.send(encode_mode(mode))
         self.send(encode_status_request())
 
+    def set_color_tune(self, brightness: int, red_margin: int, green_margin: int, blue_margin: int):
+        self.send(encode_color_tune(brightness, red_margin, green_margin, blue_margin))
+
     def stop(self):
         self.running.clear()
         if self.sock is not None:
@@ -152,6 +156,10 @@ class VisionConsole:
         self.loss_seconds = 2.0
         self.min_fps = 20
         self.motion_limit = 200
+        self.tune_bright_var = tk.StringVar(value="45")
+        self.tune_red_var = tk.StringVar(value="3")
+        self.tune_green_var = tk.StringVar(value="0")
+        self.tune_blue_var = tk.StringVar(value="3")
 
 
         self._configure_window()
@@ -301,6 +309,21 @@ class VisionConsole:
                   activeforeground="white", relief="flat", cursor="hand2",
                   font=(FONT, 10), padx=12, pady=9).pack(fill="x", padx=18, pady=(10, 16))
 
+        tune_card, tune_shell = self._card(right)
+        tune_shell.pack(fill="x", pady=(0, 12))
+        tk.Label(tune_card, text="颜色识别调参（下发 FPGA）", bg=CARD, fg=TEXT,
+                 font=(FONT, 12, "bold")).pack(anchor="w", padx=18, pady=(14, 8))
+        self._parameter_row(tune_card, "亮度门槛 (0~255)", self.tune_bright_var)
+        self._parameter_row(tune_card, "红边距 (0~3)", self.tune_red_var)
+        self._parameter_row(tune_card, "绿边距 (0~3)", self.tune_green_var)
+        self._parameter_row(tune_card, "蓝边距 (0~3)", self.tune_blue_var)
+        tk.Label(tune_card, text="边距: 0=12.5%  1=18.75%  2=25%  3=31.25%", bg=CARD, fg=MUTED,
+                 font=(FONT, 8)).pack(anchor="w", padx=18, pady=(2, 4))
+        tk.Button(tune_card, text="应用并下发", command=self._apply_color_tune,
+                  bg=ACCENT, fg="white", activebackground=ACCENT_HOVER,
+                  activeforeground="white", relief="flat", cursor="hand2",
+                  font=(FONT, 10), padx=12, pady=9).pack(fill="x", padx=18, pady=(8, 16))
+
         network_card, network_shell = self._card(right)
         network_shell.pack(fill="x")
         tk.Label(network_card, text="网络信息", bg=CARD, fg=TEXT,
@@ -447,6 +470,21 @@ class VisionConsole:
         self.motion_limit = motion_limit
         self._log("上位机", "监控告警参数已应用；这些参数不改变 FPGA 识别算法。")
         self._evaluate_alarms(time.monotonic())
+
+    def _apply_color_tune(self):
+        try:
+            brightness = int(self.tune_bright_var.get())
+            red = int(self.tune_red_var.get())
+            green = int(self.tune_green_var.get())
+            blue = int(self.tune_blue_var.get())
+            if not (0 <= brightness <= 255 and 0 <= red <= 3 and 0 <= green <= 3 and 0 <= blue <= 3):
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("参数无效", "亮度应为 0~255，红/绿/蓝边距应为 0~3。")
+            return
+        if self.worker is not None:
+            self.worker.set_color_tune(brightness, red, green, blue)
+        self._log("上位机", f"已下发颜色调参：亮度 {brightness}，红 {red} 绿 {green} 蓝 {blue}")
 
     def _poll_events(self):
         try:

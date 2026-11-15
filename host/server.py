@@ -391,6 +391,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "bad mode"}, 400)
         elif path == "/params":
             self._json({"ok": STATE.set_params(data)})
+        elif path == "/tune":
+            try:
+                brightness = int(data.get("brightness", -1))
+                red = int(data.get("red", -1))
+                green = int(data.get("green", -1))
+                blue = int(data.get("blue", -1))
+                if not (0 <= brightness <= 255 and 0 <= red <= 3 and 0 <= green <= 3 and 0 <= blue <= 3):
+                    raise ValueError
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "bad tune"}, 400)
+            else:
+                WORKER.set_color_tune(brightness, red, green, blue)
+                self._json({"ok": True})
         elif path == "/car/connect":
             ok, error = car_connect(str(data.get("port", "")))
             self._json({"ok": ok, "error": error}, 200 if ok else 400)
