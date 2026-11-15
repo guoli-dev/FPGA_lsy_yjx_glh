@@ -85,7 +85,7 @@
 - 动作连续执行，不再按距离/角度（1m/360°）限位。
 - 超时（`COLOR_TRACK_TIMEOUT_MS=200ms`）未收到帧仍自动停车。
 - 可调参数在 `ColorTrack.h`：`CARD_FWD_SPEED`(80)、`CARD_ROT_SPEED`(60)、`CARD_ROT_DIR`。
-- 跟随模式平滑：`COLOR_TRACK_DEV_ALPHA`/`COLOR_TRACK_WID_ALPHA` 0.30 → 0.18（更平滑，消除一卡一卡）。
+- 跟随模式平滑：`COLOR_TRACK_DEV_ALPHA`/`COLOR_TRACK_WID_ALPHA` 0.30 → 0.18，`COLOR_TRACK_LOCK_LOST_FRAMES` 5 → 20（容忍 FPGA 偶发丢帧，消除一卡一卡）。
 
 ---
 

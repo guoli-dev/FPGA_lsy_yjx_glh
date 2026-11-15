@@ -37,7 +37,7 @@
 // ======================= 可调参数 =======================
 #define COLOR_TRACK_USE_MASK        0x07u // 参与选择的颜色: bit0红 bit1绿 bit2蓝
 #define COLOR_TRACK_SWITCH_MARGIN   5u    // 换目标滞回: 另一色宽 > 当前锁定宽+此值才切换
-#define COLOR_TRACK_LOCK_LOST_FRAMES 5u   // 锁定色连续丢这么多帧才放弃(约83ms@60Hz)
+#define COLOR_TRACK_LOCK_LOST_FRAMES 20u   // 锁定色连续丢这么多帧才放弃(约333ms@60Hz), 容忍FPGA偶发丢帧
 #define COLOR_TRACK_DEV_INVERT  0     // dev 符号取反: 1=摄像头画面左右镜像时用; 0=正常(默认)
 #define COLOR_TRACK_DEADBAND    4     // 偏差死区(像素*8), 挡住抖动
 #define COLOR_TRACK_NEAR_W      30    // [旧] 距离三段阈值, 现已不用
