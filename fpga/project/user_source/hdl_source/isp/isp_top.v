@@ -608,13 +608,14 @@ module gamma_96 #(
     //
     // Two deliberate differences from the reference:
     //   * they spend 12 DSPs (pre-subtract, multiply and post-add inside one
-    //     DSP per channel). SAT_K is a compile-time constant here, so the
-    //     multiply folds into a single add and the stage still costs no DSP.
+    //     DSP per channel). Here the boost is written out as shifts.
+    //     Do NOT write "d * K" even when K is a localparam: TD still builds a
+    //     real multiplier and maps it to a DSP (measured: 28 -> 48 DSPs, 120 %
+    //     of the device, the fit fails). 6/16 = 1/4 + 1/8 keeps it shift-add.
     //   * their clamp decodes the DSP accumulator overflow bits. Here the sum
     //     is a small unsigned number and both ends are clamped explicitly, so
     //     a dark channel can never wrap up into white the way the previous
     //     version did.
-    localparam [4:0] SAT_K = 5'd6;      // boost = SAT_K/16 (6 -> 37.5 %), must be >= 0
 
     function [7:0] sat8;
         input [7:0] c;
@@ -625,12 +626,12 @@ module gamma_96 #(
         begin
             if (c >= y) begin
                 d = {2'b0, c} - {2'b0, y};
-                p = (d * SAT_K) >> 4;                 // d * 6 = (d<<2)+(d<<1)
+                p = (d >> 2) + (d >> 3);              // 6/16 = 1/4 + 1/8, shift-add
                 s = {2'b0, c} + p;
                 sat8 = (s > 10'd255) ? 8'hff : s[7:0];
             end else begin
                 d = {2'b0, y} - {2'b0, c};
-                p = (d * SAT_K) >> 4;
+                p = (d >> 2) + (d >> 3);              // 6/16 = 1/4 + 1/8, shift-add
                 sat8 = ({2'b0, c} > p) ? ({2'b0, c} - p) : 8'd0;
             end
         end
