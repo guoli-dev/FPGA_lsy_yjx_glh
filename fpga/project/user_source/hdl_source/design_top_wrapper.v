@@ -10,6 +10,7 @@ module design_top_wrapper (
       
     inout wire [1:0]  I_button,
     input wire        I_car_mode_sw,
+    input wire        I_standby_sw,
 
     output wire       O_uart_tx,
     output wire       O_buzzer,
@@ -1166,6 +1167,17 @@ isp_top u_isp_top (
             S_logo_en <= ~S_logo_en;
     end
 
+    // ---- SW2 待机开关 (2026-11-17) ------------------------------------------
+    // SW2 = B4, 带上拉, 低电平有效: 拨到使能位读到 0 -> 待机屏。
+    reg [1:0] S_standby_sw_sync;
+    always @(posedge S_hdmi_pixel_clk or negedge S_hdmi_rst_n) begin
+        if(!S_hdmi_rst_n)
+            S_standby_sw_sync <= 2'b11;
+        else
+            S_standby_sw_sync <= {S_standby_sw_sync[0], I_standby_sw};
+    end
+    wire S_standby = ~S_standby_sw_sync[1];   // 1 = 待机
+
     hdmi_mixer #(
         .H_OFFSET   ( 0    ),
         .V_OFFSET   ( 0    ),
@@ -1176,6 +1188,7 @@ isp_top u_isp_top (
         .I_clk           ( S_hdmi_pixel_clk   ),
         .I_rst_n         ( S_hdmi_rst_n       ),
         .I_logo_en       ( S_logo_en          ),
+        .I_standby       ( S_standby          ),
         .I_mode          ( S_mode_hdmi_sync   ),
         .I_ae_exp        ( (S_mode_hdmi_sync == 3'd7) ? S_pb_sync[23:8] : S_ae_hdmi_sync ),
         .I_ae_gain       ( (S_mode_hdmi_sync == 3'd7) ? S_pb_sync[ 7:0] : S_ag_hdmi_sync ),

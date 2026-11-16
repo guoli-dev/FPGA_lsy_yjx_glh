@@ -15,6 +15,9 @@ module hdmi_mixer #(
     // 两者一起消失。
     input wire        I_logo_en,
 
+    // 待机屏 (SW2, 2026-11-17): 1 = 待机, 显示黑底 + 白色会动表情。
+    input wire        I_standby,
+
     // 当前显示模式 (2026-10-10, 2026-10-12 扩成 5 种), 用来在画面上显示"当前算法状态"。
     // 这个值在 ISP 域产生(按键驱动), 这里是 HDMI 域 —— 顶层负责把它同步过来,
     // 本模块只做展示。只在按键时变, 不需要额外的握手。
@@ -1884,6 +1887,76 @@ module hdmi_mixer #(
         end
     end
 
+    // ======================= 待机表情 (2026-11-17) ===============================
+    // 黑底 + 白色卡通脸: 两只眼睛 + 嘴, 循环 开心(^_^)/无感(圆眼+转瞳)/眨眼。
+    reg [23:0] S_face_cnt;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if(!I_rst_n) S_face_cnt <= 24'd0;
+        else if(I_video_vsync) S_face_cnt <= S_face_cnt + 1'b1;
+    end
+    wire [1:0] S_expr = (S_face_cnt[8:7] == 2'd3) ? 2'd0 : S_face_cnt[8:7]; // 0开心 1无感 2眨眼
+
+    // 瞳孔 8 方向环绕 (半径 14)
+    wire [2:0] S_ang = S_face_cnt[5:3];
+    reg signed [7:0] S_pdx, S_pdy;
+    always @(*) begin
+        case(S_ang)
+            3'd0:     begin S_pdx = 8'sd0;   S_pdy = -8'sd14; end
+            3'd1:     begin S_pdx = 8'sd10;  S_pdy = -8'sd10; end
+            3'd2:     begin S_pdx = 8'sd14;  S_pdy = 8'sd0;   end
+            3'd3:     begin S_pdx = 8'sd10;  S_pdy = 8'sd10;  end
+            3'd4:     begin S_pdx = 8'sd0;   S_pdy = 8'sd14;  end
+            3'd5:     begin S_pdx = -8'sd10; S_pdy = 8'sd10;  end
+            3'd6:     begin S_pdx = -8'sd14; S_pdy = 8'sd0;   end
+            default:  begin S_pdx = -8'sd10; S_pdy = -8'sd10; end
+        endcase
+    end
+
+    // 相对坐标 (左眼 580,320 / 右眼 700,320 / 嘴 640,430)
+    wire signed [11:0] S_dxl = $signed(S_x) - 12'sd580;
+    wire signed [11:0] S_dyl = $signed(S_y) - 12'sd320;
+    wire signed [11:0] S_dxr = $signed(S_x) - 12'sd700;
+    wire signed [11:0] S_dyr = $signed(S_y) - 12'sd320;
+    wire signed [11:0] S_dxm = $signed(S_x) - 12'sd640;
+    wire signed [11:0] S_dym = $signed(S_y) - 12'sd430;
+
+    // 距离平方
+    wire [23:0] S_dl2 = (S_dxl*S_dxl) + (S_dyl*S_dyl);
+    wire [23:0] S_dr2 = (S_dxr*S_dxr) + (S_dyr*S_dyr);
+    wire [23:0] S_dm2 = (S_dxm*S_dxm) + (S_dym*S_dym);
+
+    // 瞳孔相对坐标 (再减瞳孔偏移)
+    wire signed [11:0] S_pxl = S_dxl - {{4{S_pdx[7]}}, S_pdx};
+    wire signed [11:0] S_pyl = S_dyl - {{4{S_pdy[7]}}, S_pdy};
+    wire signed [11:0] S_pxr = S_dxr - {{4{S_pdx[7]}}, S_pdx};
+    wire signed [11:0] S_pyr = S_dyr - {{4{S_pdy[7]}}, S_pdy};
+    wire [23:0] S_pl2 = (S_pxl*S_pxl) + (S_pyl*S_pyl);
+    wire [23:0] S_pr2 = (S_pxr*S_pxr) + (S_pyr*S_pyr);
+
+    // 眼环 (半径30 线宽4): 26²<=d²<=34²
+    wire S_eye_ring_l = (S_dl2 >= 24'd676) && (S_dl2 <= 24'd1156);
+    wire S_eye_ring_r = (S_dr2 >= 24'd676) && (S_dr2 <= 24'd1156);
+    // 开心眼: 上半环
+    wire S_eye_happy_l = S_eye_ring_l && (S_dyl < 12'sd0);
+    wire S_eye_happy_r = S_eye_ring_r && (S_dyr < 12'sd0);
+    // 眨眼: 横线
+    wire S_eye_blink_l = (S_dyl >= -12'sd3) && (S_dyl <= 12'sd3) && (S_dxl >= -12'sd30) && (S_dxl <= 12'sd30);
+    wire S_eye_blink_r = (S_dyr >= -12'sd3) && (S_dyr <= 12'sd3) && (S_dxr >= -12'sd30) && (S_dxr <= 12'sd30);
+    // 瞳孔圆 (半径10)
+    wire S_pup_l = (S_pl2 <= 24'd100);
+    wire S_pup_r = (S_pr2 <= 24'd100);
+
+    // 嘴: 横线 (中性/眨眼) / 下半弧 (开心)
+    wire S_mouth_line = (S_dym >= -12'sd3) && (S_dym <= 12'sd3) && (S_dxm >= -12'sd40) && (S_dxm <= 12'sd40);
+    wire S_mouth_smile = (S_dm2 >= 24'd1296) && (S_dm2 <= 24'd1936) && (S_dym >= 12'sd0);
+
+    wire S_eye_l = (S_expr == 2'd0) ? S_eye_happy_l :
+                   (S_expr == 2'd1) ? (S_eye_ring_l | S_pup_l) : S_eye_blink_l;
+    wire S_eye_r = (S_expr == 2'd0) ? S_eye_happy_r :
+                   (S_expr == 2'd1) ? (S_eye_ring_r | S_pup_r) : S_eye_blink_r;
+    wire S_mouth = (S_expr == 2'd0) ? S_mouth_smile : S_mouth_line;
+    wire S_face_on = S_eye_l | S_eye_r | S_mouth;
+
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
             S_video_vsync_1d <= 1'b0;
@@ -1966,7 +2039,9 @@ module hdmi_mixer #(
                 end
             end
             else begin
-                if(S_osd_hit)
+                if(I_standby)
+                    O_hdmi_data <= S_face_on ? 24'hFFFFFF : 24'h000000;
+                else if(S_osd_hit)
                     O_hdmi_data <= S_osd_color;
                 else
                     O_hdmi_data <= S_video_data_2d;
