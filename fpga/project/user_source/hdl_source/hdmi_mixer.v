@@ -1894,14 +1894,14 @@ module hdmi_mixer #(
         if(!I_rst_n) S_face_cnt <= 24'd0;
         else if(I_video_user) S_face_cnt <= S_face_cnt + 1'b1;
     end
-    // 表情周期: 3 档 x 4 秒 = 720 帧
-    reg [9:0] S_expr_cnt;
+    // 表情周期: 3 档 x 2 秒 = 360 帧
+    reg [8:0] S_expr_cnt;
     always @(posedge I_clk or negedge I_rst_n) begin
-        if(!I_rst_n) S_expr_cnt <= 10'd0;
-        else if(I_video_user) S_expr_cnt <= (S_expr_cnt >= 10'd719) ? 10'd0 : S_expr_cnt + 10'd1;
+        if(!I_rst_n) S_expr_cnt <= 9'd0;
+        else if(I_video_user) S_expr_cnt <= (S_expr_cnt >= 9'd359) ? 9'd0 : S_expr_cnt + 9'd1;
     end
-    wire [1:0] S_expr = (S_expr_cnt < 10'd240) ? 2'd0 :
-                        (S_expr_cnt < 10'd480) ? 2'd1 : 2'd2; // 0开心 1无感 2眨眼, 各4秒
+    wire [1:0] S_expr = (S_expr_cnt < 9'd120) ? 2'd0 :
+                        (S_expr_cnt < 9'd240) ? 2'd1 : 2'd2; // 0开心 1无感 2眨眼, 各2秒
 
     // 瞳孔 8 方向环绕 (半径 50)
     wire [2:0] S_ang = S_face_cnt[5:3];
