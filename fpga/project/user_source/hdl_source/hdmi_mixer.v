@@ -1892,30 +1892,30 @@ module hdmi_mixer #(
     reg [23:0] S_face_cnt;
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) S_face_cnt <= 24'd0;
-        else if(I_video_vsync) S_face_cnt <= S_face_cnt + 1'b1;
+        else if(I_video_user) S_face_cnt <= S_face_cnt + 1'b1;
     end
-    // 表情周期: 3 档 x 50 秒 = 9000 帧
-    reg [13:0] S_expr_cnt;
+    // 表情周期: 3 档 x 4 秒 = 720 帧
+    reg [9:0] S_expr_cnt;
     always @(posedge I_clk or negedge I_rst_n) begin
-        if(!I_rst_n) S_expr_cnt <= 14'd0;
-        else if(I_video_vsync) S_expr_cnt <= (S_expr_cnt >= 14'd8999) ? 14'd0 : S_expr_cnt + 14'd1;
+        if(!I_rst_n) S_expr_cnt <= 10'd0;
+        else if(I_video_user) S_expr_cnt <= (S_expr_cnt >= 10'd719) ? 10'd0 : S_expr_cnt + 10'd1;
     end
-    wire [1:0] S_expr = (S_expr_cnt < 14'd3000) ? 2'd0 :
-                        (S_expr_cnt < 14'd6000) ? 2'd1 : 2'd2; // 0开心 1无感 2眨眼, 各50秒
+    wire [1:0] S_expr = (S_expr_cnt < 10'd240) ? 2'd0 :
+                        (S_expr_cnt < 10'd480) ? 2'd1 : 2'd2; // 0开心 1无感 2眨眼, 各4秒
 
-    // 瞳孔 8 方向环绕 (半径 55)
+    // 瞳孔 8 方向环绕 (半径 50)
     wire [2:0] S_ang = S_face_cnt[5:3];
     reg signed [7:0] S_pdx, S_pdy;
     always @(*) begin
         case(S_ang)
-            3'd0:     begin S_pdx = 8'sd0;   S_pdy = -8'sd55; end
-            3'd1:     begin S_pdx = 8'sd39;  S_pdy = -8'sd39; end
-            3'd2:     begin S_pdx = 8'sd55;  S_pdy = 8'sd0;   end
-            3'd3:     begin S_pdx = 8'sd39;  S_pdy = 8'sd39;  end
-            3'd4:     begin S_pdx = 8'sd0;   S_pdy = 8'sd55;  end
-            3'd5:     begin S_pdx = -8'sd39; S_pdy = 8'sd39;  end
-            3'd6:     begin S_pdx = -8'sd55; S_pdy = 8'sd0;   end
-            default:  begin S_pdx = -8'sd39; S_pdy = -8'sd39; end
+            3'd0:     begin S_pdx = 8'sd0;   S_pdy = -8'sd50; end
+            3'd1:     begin S_pdx = 8'sd35;  S_pdy = -8'sd35; end
+            3'd2:     begin S_pdx = 8'sd50;  S_pdy = 8'sd0;   end
+            3'd3:     begin S_pdx = 8'sd35;  S_pdy = 8'sd35;  end
+            3'd4:     begin S_pdx = 8'sd0;   S_pdy = 8'sd50;  end
+            3'd5:     begin S_pdx = -8'sd35; S_pdy = 8'sd35;  end
+            3'd6:     begin S_pdx = -8'sd50; S_pdy = 8'sd0;   end
+            default:  begin S_pdx = -8'sd35; S_pdy = -8'sd35; end
         endcase
     end
 
@@ -1949,9 +1949,9 @@ module hdmi_mixer #(
     // 眨眼: 横线 (粗)
     wire S_eye_blink_l = (S_dyl >= -12'sd16) && (S_dyl <= 12'sd16) && (S_dxl >= -12'sd100) && (S_dxl <= 12'sd100);
     wire S_eye_blink_r = (S_dyr >= -12'sd16) && (S_dyr <= 12'sd16) && (S_dxr >= -12'sd100) && (S_dxr <= 12'sd100);
-    // 瞳孔圆 (半径35)
-    wire S_pup_l = (S_pl2 <= 24'd1225);
-    wire S_pup_r = (S_pr2 <= 24'd1225);
+    // 瞳孔圆 (半径50)
+    wire S_pup_l = (S_pl2 <= 24'd2500);
+    wire S_pup_r = (S_pr2 <= 24'd2500);
 
     // 嘴: 横线 (中性/眨眼, 粗) / 下半弧 (开心, 粗)
     wire S_mouth_line = (S_dym >= -12'sd16) && (S_dym <= 12'sd16) && (S_dxm >= -12'sd150) && (S_dxm <= 12'sd150);
@@ -1963,6 +1963,13 @@ module hdmi_mixer #(
                    (S_expr == 2'd1) ? (S_eye_ring_r | S_pup_r) : S_eye_blink_r;
     wire S_mouth = (S_expr == 2'd0) ? S_mouth_smile : S_mouth_line;
     wire S_face_on = S_eye_l | S_eye_r | S_mouth;
+
+    // 打断乘法器长组合路径, 避免时序毛刺/黑色横纹 (脸部整体 1 像素延迟, 不可见)
+    reg S_face_on_r;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if(!I_rst_n) S_face_on_r <= 1'b0;
+        else S_face_on_r <= S_face_on;
+    end
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n) begin
@@ -2047,7 +2054,7 @@ module hdmi_mixer #(
             end
             else begin
                 if(I_standby)
-                    O_hdmi_data <= S_face_on ? 24'hFFFFFF : 24'h000000;
+                    O_hdmi_data <= S_face_on_r ? 24'hFFFFFF : 24'h000000;
                 else if(S_osd_hit)
                     O_hdmi_data <= S_osd_color;
                 else
