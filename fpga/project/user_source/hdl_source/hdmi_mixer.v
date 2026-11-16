@@ -1894,31 +1894,31 @@ module hdmi_mixer #(
         if(!I_rst_n) S_face_cnt <= 24'd0;
         else if(I_video_vsync) S_face_cnt <= S_face_cnt + 1'b1;
     end
-    wire [1:0] S_expr = (S_face_cnt[8:7] == 2'd3) ? 2'd0 : S_face_cnt[8:7]; // 0开心 1无感 2眨眼
+    wire [1:0] S_expr = (S_face_cnt[9:8] == 2'd3) ? 2'd0 : S_face_cnt[9:8]; // 0开心 1无感 2眨眼 (~4.3s/档)
 
-    // 瞳孔 8 方向环绕 (半径 14)
+    // 瞳孔 8 方向环绕 (半径 55)
     wire [2:0] S_ang = S_face_cnt[5:3];
     reg signed [7:0] S_pdx, S_pdy;
     always @(*) begin
         case(S_ang)
-            3'd0:     begin S_pdx = 8'sd0;   S_pdy = -8'sd14; end
-            3'd1:     begin S_pdx = 8'sd10;  S_pdy = -8'sd10; end
-            3'd2:     begin S_pdx = 8'sd14;  S_pdy = 8'sd0;   end
-            3'd3:     begin S_pdx = 8'sd10;  S_pdy = 8'sd10;  end
-            3'd4:     begin S_pdx = 8'sd0;   S_pdy = 8'sd14;  end
-            3'd5:     begin S_pdx = -8'sd10; S_pdy = 8'sd10;  end
-            3'd6:     begin S_pdx = -8'sd14; S_pdy = 8'sd0;   end
-            default:  begin S_pdx = -8'sd10; S_pdy = -8'sd10; end
+            3'd0:     begin S_pdx = 8'sd0;   S_pdy = -8'sd55; end
+            3'd1:     begin S_pdx = 8'sd39;  S_pdy = -8'sd39; end
+            3'd2:     begin S_pdx = 8'sd55;  S_pdy = 8'sd0;   end
+            3'd3:     begin S_pdx = 8'sd39;  S_pdy = 8'sd39;  end
+            3'd4:     begin S_pdx = 8'sd0;   S_pdy = 8'sd55;  end
+            3'd5:     begin S_pdx = -8'sd39; S_pdy = 8'sd39;  end
+            3'd6:     begin S_pdx = -8'sd55; S_pdy = 8'sd0;   end
+            default:  begin S_pdx = -8'sd39; S_pdy = -8'sd39; end
         endcase
     end
 
-    // 相对坐标 (左眼 580,320 / 右眼 700,320 / 嘴 640,430)
-    wire signed [11:0] S_dxl = $signed(S_x) - 12'sd580;
-    wire signed [11:0] S_dyl = $signed(S_y) - 12'sd320;
-    wire signed [11:0] S_dxr = $signed(S_x) - 12'sd700;
-    wire signed [11:0] S_dyr = $signed(S_y) - 12'sd320;
+    // 相对坐标 (左眼 420,220 / 右眼 860,220 / 嘴 640,560)
+    wire signed [11:0] S_dxl = $signed(S_x) - 12'sd420;
+    wire signed [11:0] S_dyl = $signed(S_y) - 12'sd220;
+    wire signed [11:0] S_dxr = $signed(S_x) - 12'sd860;
+    wire signed [11:0] S_dyr = $signed(S_y) - 12'sd220;
     wire signed [11:0] S_dxm = $signed(S_x) - 12'sd640;
-    wire signed [11:0] S_dym = $signed(S_y) - 12'sd430;
+    wire signed [11:0] S_dym = $signed(S_y) - 12'sd560;
 
     // 距离平方
     wire [23:0] S_dl2 = (S_dxl*S_dxl) + (S_dyl*S_dyl);
@@ -1933,22 +1933,22 @@ module hdmi_mixer #(
     wire [23:0] S_pl2 = (S_pxl*S_pxl) + (S_pyl*S_pyl);
     wire [23:0] S_pr2 = (S_pxr*S_pxr) + (S_pyr*S_pyr);
 
-    // 眼环 (半径30 线宽4): 26²<=d²<=34²
-    wire S_eye_ring_l = (S_dl2 >= 24'd676) && (S_dl2 <= 24'd1156);
-    wire S_eye_ring_r = (S_dr2 >= 24'd676) && (S_dr2 <= 24'd1156);
+    // 眼环 (半径120 线宽30): 105²<=d²<=135²
+    wire S_eye_ring_l = (S_dl2 >= 24'd11025) && (S_dl2 <= 24'd18225);
+    wire S_eye_ring_r = (S_dr2 >= 24'd11025) && (S_dr2 <= 24'd18225);
     // 开心眼: 上半环
     wire S_eye_happy_l = S_eye_ring_l && (S_dyl < 12'sd0);
     wire S_eye_happy_r = S_eye_ring_r && (S_dyr < 12'sd0);
-    // 眨眼: 横线
-    wire S_eye_blink_l = (S_dyl >= -12'sd3) && (S_dyl <= 12'sd3) && (S_dxl >= -12'sd30) && (S_dxl <= 12'sd30);
-    wire S_eye_blink_r = (S_dyr >= -12'sd3) && (S_dyr <= 12'sd3) && (S_dxr >= -12'sd30) && (S_dxr <= 12'sd30);
-    // 瞳孔圆 (半径10)
-    wire S_pup_l = (S_pl2 <= 24'd100);
-    wire S_pup_r = (S_pr2 <= 24'd100);
+    // 眨眼: 横线 (粗)
+    wire S_eye_blink_l = (S_dyl >= -12'sd16) && (S_dyl <= 12'sd16) && (S_dxl >= -12'sd100) && (S_dxl <= 12'sd100);
+    wire S_eye_blink_r = (S_dyr >= -12'sd16) && (S_dyr <= 12'sd16) && (S_dxr >= -12'sd100) && (S_dxr <= 12'sd100);
+    // 瞳孔圆 (半径35)
+    wire S_pup_l = (S_pl2 <= 24'd1225);
+    wire S_pup_r = (S_pr2 <= 24'd1225);
 
-    // 嘴: 横线 (中性/眨眼) / 下半弧 (开心)
-    wire S_mouth_line = (S_dym >= -12'sd3) && (S_dym <= 12'sd3) && (S_dxm >= -12'sd40) && (S_dxm <= 12'sd40);
-    wire S_mouth_smile = (S_dm2 >= 24'd1296) && (S_dm2 <= 24'd1936) && (S_dym >= 12'sd0);
+    // 嘴: 横线 (中性/眨眼, 粗) / 下半弧 (开心, 粗)
+    wire S_mouth_line = (S_dym >= -12'sd16) && (S_dym <= 12'sd16) && (S_dxm >= -12'sd150) && (S_dxm <= 12'sd150);
+    wire S_mouth_smile = (S_dm2 >= 24'd15625) && (S_dm2 <= 24'd24025) && (S_dym >= 12'sd0);
 
     wire S_eye_l = (S_expr == 2'd0) ? S_eye_happy_l :
                    (S_expr == 2'd1) ? (S_eye_ring_l | S_pup_l) : S_eye_blink_l;
