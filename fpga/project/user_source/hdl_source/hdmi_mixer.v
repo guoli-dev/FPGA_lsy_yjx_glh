@@ -1894,7 +1894,14 @@ module hdmi_mixer #(
         if(!I_rst_n) S_face_cnt <= 24'd0;
         else if(I_video_vsync) S_face_cnt <= S_face_cnt + 1'b1;
     end
-    wire [1:0] S_expr = (S_face_cnt[9:8] == 2'd3) ? 2'd0 : S_face_cnt[9:8]; // 0开心 1无感 2眨眼 (~4.3s/档)
+    // 表情周期: 3 档 x 15 秒 = 2700 帧
+    reg [11:0] S_expr_cnt;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if(!I_rst_n) S_expr_cnt <= 12'd0;
+        else if(I_video_vsync) S_expr_cnt <= (S_expr_cnt >= 12'd2699) ? 12'd0 : S_expr_cnt + 12'd1;
+    end
+    wire [1:0] S_expr = (S_expr_cnt < 12'd900) ? 2'd0 :
+                        (S_expr_cnt < 12'd1800) ? 2'd1 : 2'd2; // 0开心 1无感 2眨眼, 各15秒
 
     // 瞳孔 8 方向环绕 (半径 55)
     wire [2:0] S_ang = S_face_cnt[5:3];
@@ -1918,7 +1925,7 @@ module hdmi_mixer #(
     wire signed [11:0] S_dxr = $signed(S_x) - 12'sd860;
     wire signed [11:0] S_dyr = $signed(S_y) - 12'sd220;
     wire signed [11:0] S_dxm = $signed(S_x) - 12'sd640;
-    wire signed [11:0] S_dym = $signed(S_y) - 12'sd560;
+    wire signed [11:0] S_dym = $signed(S_y) - 12'sd530;
 
     // 距离平方
     wire [23:0] S_dl2 = (S_dxl*S_dxl) + (S_dyl*S_dyl);
