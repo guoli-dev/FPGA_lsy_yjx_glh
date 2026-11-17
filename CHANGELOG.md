@@ -76,14 +76,31 @@
 
 | 稳定颜色 | 动作 |
 |---|---|
-| 红 | 前进 1m（100cm）后停 |
-| 绿 | 后退 1m（100cm）后停 |
-| 蓝 | 原地旋转 360° 后停 |
-| 无 / 多色 | 静止不动 |
+| 红 | 停止 |
+| 绿 | 前进 |
+| 蓝 | 原地旋转 |
+| 无 / 多色 | 保持上一个颜色命令（锁存） |
 
-- 距离用四轮编码器积分（`ENCODER_COUNT_TO_CM=0.486` cm/count），角度用陀螺积分。
-- 换颜色 / 无颜色时清累计重新开始；超时（`COLOR_TRACK_TIMEOUT_MS=200ms`）未收到帧自动停车。
-- 可调参数在 `ColorTrack.h`：`CARD_DIST_CM`、`CARD_ROT_DEG`、`CARD_FWD_SPEED`、`CARD_BACK_SPEED`、`CARD_ROT_SPEED`、`CARD_ROT_DIR`。
+- **锁存逻辑**：只有识别到新颜色才切换命令；无颜色/多色时继续执行上一个颜色的命令。
+- 动作连续执行，不再按距离/角度（1m/360°）限位。
+- 超时（`COLOR_TRACK_TIMEOUT_MS=200ms`）未收到帧仍自动停车。
+- 可调参数在 `ColorTrack.h`：`CARD_FWD_SPEED`(80)、`CARD_ROT_SPEED`(60)、`CARD_ROT_DIR`。
+- 跟随模式平滑：`COLOR_TRACK_DEV_ALPHA`/`COLOR_TRACK_WID_ALPHA` 0.30 → 0.18，`COLOR_TRACK_LOCK_LOST_FRAMES` 5 → 20（容忍 FPGA 偶发丢帧，消除一卡一卡）。
+
+---
+
+## 2026-11-15 — FPGA 颜色调参（网口下发，优先级 6）
+
+为上位机实时调参做准备，把颜色识别的阈值从「写死」改成「网口运行时可调」。
+
+| 文件 | 改动 |
+|---|---|
+| `isp/isp_top.v` | `color_detect_96` / `classify_overlay_96` 加运行时输入 `I_min_bright`（亮度门）+ `I_margin_r/g/b`（红/绿/蓝主色边距档位，2/16~5/16 四档）。默认值保持 45 / 31.25% / 12.5% / 31.25%。 |
+| `eth/eth_host.v` | 加调参命令 `0x05 [亮度] [三色边距]`（3 字节），输出 `O_tune_toggle`/`O_tune_val`(16bit)。 |
+| `design_top_wrapper.v` | 调参值 CDC（clk_125→CSI）+ 接到 isp_top。 |
+
+- 边距档位编码：`0`=2/16(12.5%) `1`=3/16(18.75%) `2`=4/16(25%) `3`=5/16(31.25%)。
+- 调参命令 3 字节：`[0x05] [亮度0-255] [边距: bit5:4=蓝 bit3:2=绿 bit1:0=红]`。
 
 ---
 

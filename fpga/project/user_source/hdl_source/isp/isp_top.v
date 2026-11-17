@@ -5,6 +5,10 @@ module isp_top (
     //   0=原图  1=边缘  2=卡通化  3=跟踪(框+标签+十字)  4=运动检测(帧差染色)
     // 由 design_top_wrapper 的按键驱动; 本模块在帧边界采样, 避免半帧切换造成撕裂。
     input [2:0] 	I_mode			,
+    input [7:0]     I_min_bright,   // runtime color brightness gate (default 45)
+    input [1:0]     I_margin_r,     // red margin level (default 3 = 5/16)
+    input [1:0]     I_margin_g,     // green margin level (default 0 = 2/16)
+    input [1:0]     I_margin_b,     // blue margin level (default 3 = 5/16)
     input 			I_tlast			,
     input 			I_tuser			,
     input [39:0] 	I_tdata			,
@@ -256,9 +260,6 @@ color_detect_96 #(
                                  //   不再是包围盒的硬门 —— 零散点会变成像素数极少的
                                  //   轨迹, 帧末被 AREA_TH 直接淘汰。所以它可以从 4
                                  //   退回 3/2, 不会再把远处的绿目标整帧门掉。
-    .MIN_BRIGHT        (45  ),   // 2026-11-13: 75 -> 45。75 是绝对亮度门，夜里暗一点的红物体直接被挡在外面。
-                                 // 红/蓝的相对饱和度门限（50% / 25%）本身就能挡住大部分非目标色，
-                                 // 亮度门不需要卡这么高。值压低后由相对门限兜噪声。
     .AREA_TH           (300 ),   // **单个连通域**小于 300 像素不报
     .MIN_RUN           (3   ),   // 2026-10-19: 2->3, horizontal erosion for the bbox only
     .EDGE_MASK_X       (32  ),   // 2026-11-14: 80->32。四角盲区每角 3600px2 -> 576px2
@@ -288,6 +289,10 @@ color_detect_96 #(
     .I_tuser     (gam_tuser),
     .I_tvalid    (gam_tvalid),
     .I_tdata     (gam_tdata),
+    .I_min_bright(I_min_bright),
+    .I_margin_r  (I_margin_r  ),
+    .I_margin_g  (I_margin_g  ),
+    .I_margin_b  (I_margin_b  ),
     .O_det_boxes (det_boxes_raw ),
     .O_det_boxes2(det_boxes2),
     .O_det_boxes3(det_boxes3),
@@ -776,7 +781,6 @@ module color_detect_96 #(
     // 真实物体的内部是 4/4, 照样过; 背景散点很难凑够 3/4。
     // 只作用于绿色; 红蓝仍用 MIN_RUN。
     parameter GREEN_MIN_RUN = 2,
-    parameter MIN_BRIGHT    = 80,   // 亮度下限, 滤除暗噪声
     parameter AREA_TH       = 300,  // **单个连通域**面积(像素数)小于该值不报
     parameter AREA_MAX      = 250000,// 2026-11-13: 80000 -> 250000。80000 和"凑近的实体色块"尺寸重叠：木门十几万像素，但拿近的红块也能到十万以上，实物全被拒、只剩手机上离得远的小色块能过。放宽到 250000（全画面 921600 的 27%），只拒绝几乎占满画面的整片区域。
     parameter MIN_RUN       = 2,    // 每个 4 像素组内至少这么多像素命中才算"活跃"
@@ -804,6 +808,10 @@ module color_detect_96 #(
     input            I_tuser,     // 帧开始
     input            I_tvalid,
     input  [95:0]    I_tdata,     // 4 x RGB888, pix0=[95:72] 在最左
+    input  [7:0]     I_min_bright, // runtime brightness gate (default 45)
+    input  [1:0]     I_margin_r,   // red margin level: 0=2/16 1=3/16 2=4/16 3=5/16
+    input  [1:0]     I_margin_g,   // green margin level
+    input  [1:0]     I_margin_b,   // blue margin level
 
     // 三色结果, 每种 64 位:
     //   [42:0]  包围盒 = {valid, left[10:0], right[10:0], top[9:0], bottom[9:0]}
@@ -884,17 +892,27 @@ module color_detect_96 #(
     //   <==>  128R >= 107G + 21B + CR_T      (两边都是非负)
     // 2026-11-13: YCbCr 那版上板后"只有蓝色能识别，红绿全没有"，回退到这里。
     //
-    // 判据：主导通道比另外两个都高出自身值的 31.25%（5/16）。
-    //   红: r 最大 且 (r-g) >= 5r/16 且 (r-b) >= 5r/16
-    //   绿: g 最大 且 (g-r) >= 5g/16 且 (g-b) >= 5g/16
-    //   蓝: b 最大 且 (b-r) >= 5b/16 且 (b-g) >= 5b/16
-    // 5x/16 = (x>>2) + (x>>4)，纯移位加法，0 乘法 0 除法。
+    // Runtime-tunable dominance margin: the level selects the fraction of the
+    // leading channel it must beat the others by.
+    //   0 = 2/16 (12.5%), 1 = 3/16 (18.75%), 2 = 4/16 (25%), 3 = 5/16 (31.25%)
+    function [7:0] color_margin;
+        input [7:0] x;
+        input [1:0] lvl;
+        begin
+            case (lvl)
+                2'd0: color_margin = x >> 3;                  // 2/16
+                2'd1: color_margin = (x >> 3) + (x >> 4);     // 3/16
+                2'd2: color_margin = x >> 2;                  // 4/16
+                default: color_margin = (x >> 2) + (x >> 4);  // 5/16
+            endcase
+        end
+    endfunction
     function is_red;
         input [7:0] r, g, b;
         reg   [7:0] m;
         begin
-            m = (r >> 2) + (r >> 4);
-            is_red = (r >= MIN_BRIGHT) && (r >= g) && (r >= b) &&
+            m = color_margin(r, I_margin_r);
+            is_red = (r >= I_min_bright) && (r >= g) && (r >= b) &&
                      ((r - g) >= m) && ((r - b) >= m);
         end
     endfunction
@@ -902,15 +920,8 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg   [7:0] m;
         begin
-            // 2026-11-15: 3/16 -> 5/32 (18.75% -> 15.6%). The mode-7 overlay
-            //   showed the gate fails on green objects near the frame edge even
-            //   though the radial tint there REDUCES R and B (which should widen
-            //   g-r, not narrow it). So the residual edge cast is stronger than
-            //   the tint assumes. 5/32 is a 17% relaxation, one step short of
-            //   2/16=12.5%, so olive/yellow still stays out.
-            //   Cost unchanged: two shifts and one add, same as before.
-            m = (g >> 3);                    // 2/16 = 12.5 %
-            is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
+            m = color_margin(g, I_margin_g);
+            is_green = (g >= I_min_bright) && (g >= r) && (g >= b) &&
                        ((g - r) >= m) && ((g - b) >= m);
         end
     endfunction
@@ -918,8 +929,8 @@ module color_detect_96 #(
         input [7:0] r, g, b;
         reg   [7:0] m;
         begin
-            m = (b >> 2) + (b >> 4);
-            is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
+            m = color_margin(b, I_margin_b);
+            is_blue = (b >= I_min_bright) && (b >= r) && (b >= g) &&
                       ((b - r) >= m) && ((b - g) >= m);
         end
     endfunction
@@ -1611,47 +1622,56 @@ module color_box_96 #(
 
 endmodule
 
-module classify_overlay_96 #(
-    parameter COLOR_MARGIN_SHIFT = 2,
-    parameter MIN_BRIGHT = 30
-)(
+module classify_overlay_96 (
     input             I_clk,
     input             I_rst_n,
     input             I_bypass,
     input             I_tuser,
     input             I_tvalid,
     input      [95:0] I_tdata,
+    input      [7:0]  I_min_bright,
+    input      [1:0]  I_margin_r,
+    input      [1:0]  I_margin_g,
+    input      [1:0]  I_margin_b,
     output reg        O_tuser,
     output reg        O_tvalid,
     output reg [95:0] O_tdata
 );
 
+    function [7:0] color_margin;
+        input [7:0] x;
+        input [1:0] lvl;
+        begin
+            case (lvl)
+                2'd0: color_margin = x >> 3;
+                2'd1: color_margin = (x >> 3) + (x >> 4);
+                2'd2: color_margin = x >> 2;
+                default: color_margin = (x >> 2) + (x >> 4);
+            endcase
+        end
+    endfunction
     function is_red;
         input [7:0] r, g, b;
         begin
-            is_red = (r >= MIN_BRIGHT) && (r >= g) && (r >= b) &&
-                     ((r - g) >= (r >> COLOR_MARGIN_SHIFT)) &&
-                     ((r - b) >= (r >> COLOR_MARGIN_SHIFT));
+            is_red = (r >= I_min_bright) && (r >= g) && (r >= b) &&
+                     ((r - g) >= color_margin(r, I_margin_r)) &&
+                     ((r - b) >= color_margin(r, I_margin_r));
         end
     endfunction
     function is_green;
         input [7:0] r, g, b;
-        reg [7:0] g_m;
         begin
-            // must match color_detect_96 exactly, otherwise this debug view lies
-            g_m = (g >> 3);                     // 2/16 = 12.5 %, must match the detector
-            is_green = (g >= MIN_BRIGHT) && (g >= r) && (g >= b) &&
-                       ((g - r) >= g_m) && ((g - b) >= g_m);
+            is_green = (g >= I_min_bright) && (g >= r) && (g >= b) &&
+                       ((g - r) >= color_margin(g, I_margin_g)) &&
+                       ((g - b) >= color_margin(g, I_margin_g));
         end
     endfunction
     function is_blue;
         input [7:0] r, g, b;
-        reg [7:0] b_m;
         begin
-            b_m = (b >> 2) + (b >> 4);   // 2026-11-13: 37.5% -> 31.25%，补偿 gamma 提亮
-            is_blue = (b >= MIN_BRIGHT) && (b >= r) && (b >= g) &&
-                      ((b - r) >= (b >> COLOR_MARGIN_SHIFT)) &&
-                      ((b - g) >= (b >> COLOR_MARGIN_SHIFT));
+            is_blue = (b >= I_min_bright) && (b >= r) && (b >= g) &&
+                      ((b - r) >= color_margin(b, I_margin_b)) &&
+                      ((b - g) >= color_margin(b, I_margin_b));
         end
     endfunction
 

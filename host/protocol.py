@@ -83,6 +83,14 @@ def encode_motion_request() -> bytes:
     return b"\x04"
 
 
+# 颜色调参命令 0x05 [亮度] [边距]。
+# 边距档位: 0=2/16(12.5%) 1=3/16(18.75%) 2=4/16(25%) 3=5/16(31.25%)
+def encode_color_tune(brightness: int, red_margin: int, green_margin: int, blue_margin: int) -> bytes:
+    brightness = max(0, min(255, brightness))
+    margins = ((blue_margin & 0b11) << 4) | ((green_margin & 0b11) << 2) | (red_margin & 0b11)
+    return bytes((0x05, brightness, margins))
+
+
 def _decode_block(
     name: str,
     color: str,

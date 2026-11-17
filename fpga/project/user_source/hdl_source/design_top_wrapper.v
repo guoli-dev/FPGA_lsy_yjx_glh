@@ -10,6 +10,7 @@ module design_top_wrapper (
       
     inout wire [1:0]  I_button,
     input wire        I_car_mode_sw,
+    input wire        I_standby_sw,
 
     output wire       O_uart_tx,
     output wire       O_buzzer,
@@ -682,6 +683,8 @@ end
 // toggle 3 级同步(边沿检测), 值 2 级同步 —— 边沿到时值已稳定一周期。
 wire        S_eth_mode_toggle;
 wire [2:0]  S_eth_mode_val;
+wire        S_eth_tune_toggle;
+wire [15:0] S_eth_tune_val;
 wire [15:0] S_frame_id;
 wire [15:0] S_lat_fid;
 wire [14:0] S_mot_cnt_csi;
@@ -704,7 +707,9 @@ eth_host u_eth_host(
     .I_color_data    ( S_color_telemetry),
     .I_mot_box       ( S_mot_box_csi    ),
     .O_mode_toggle   ( S_eth_mode_toggle),
-    .O_mode_val      ( S_eth_mode_val   )
+    .O_mode_val      ( S_eth_mode_val   ),
+    .O_tune_toggle   ( S_eth_tune_toggle),
+    .O_tune_val      ( S_eth_tune_val   )
 );
 
 reg        S_eth_tgl1, S_eth_tgl2, S_eth_tgl3;
@@ -723,6 +728,26 @@ always @(posedge S_csi_rx_clk or negedge S_rst_n) begin
 end
 wire        S_eth_mode_set = (S_eth_tgl3 != S_eth_tgl2);
 wire [2:0]  S_eth_mode     = S_eth_val2;
+
+// ---- 色卡调参 CDC (亮度 + 红/绿/蓝边距, clk_125 -> CSI) ----------------------
+// 与模式命令同款: toggle 3 级同步 + 值 2 级同步, 边沿到达时值已稳定。
+// 默认 0x332D = 亮度45, 红边距3(5/16), 绿边距0(2/16), 蓝边距3(5/16)。
+reg [2:0]  S_tune_tgl_csi;
+reg [15:0] S_tune_val1, S_tune_val2, S_tune_csi;
+always @(posedge S_csi_rx_clk or negedge S_rst_n) begin
+    if(!S_rst_n) begin
+        S_tune_tgl_csi <= 3'd0;
+        S_tune_val1 <= 16'h332D;
+        S_tune_val2 <= 16'h332D;
+        S_tune_csi  <= 16'h332D;
+    end else begin
+        S_tune_tgl_csi <= {S_tune_tgl_csi[1:0], S_eth_tune_toggle};
+        S_tune_val1 <= S_eth_tune_val;
+        S_tune_val2 <= S_tune_val1;
+        if(S_tune_tgl_csi[2] != S_tune_tgl_csi[1])
+            S_tune_csi <= S_tune_val2;
+    end
+end
 
 // ---- capture-to-display latency CDC (2026-10-14) ---------------------------
 // video_in counts frames in the ddr clock domain; the OSD that shows it lives
@@ -926,6 +951,10 @@ isp_top u_isp_top (
 .axi4s_video_aclk(S_csi_rx_clk),
 .I_rst_n         (S_rst_n),
 .I_mode          (S_display_mode),
+.I_min_bright    (S_tune_csi[7:0]  ),
+.I_margin_r      (S_tune_csi[9:8]  ),
+.I_margin_g      (S_tune_csi[11:10]),
+.I_margin_b      (S_tune_csi[13:12]),
 .I_tlast         (S_raw_tlast	),
 .I_tuser         (S_raw_tuser	),
 .I_tdata         (S_raw_tdata	),
@@ -1129,6 +1158,17 @@ isp_top u_isp_top (
             S_logo_en <= ~S_logo_en;
     end
 
+    // ---- SW2 待机开关 (2026-11-17) ------------------------------------------
+    // SW2 = B4, 带上拉, 低电平有效: 拨到使能位读到 0 -> 待机屏。
+    reg [1:0] S_standby_sw_sync;
+    always @(posedge S_hdmi_pixel_clk or negedge S_hdmi_rst_n) begin
+        if(!S_hdmi_rst_n)
+            S_standby_sw_sync <= 2'b11;
+        else
+            S_standby_sw_sync <= {S_standby_sw_sync[0], I_standby_sw};
+    end
+    wire S_standby = ~S_standby_sw_sync[1];   // 1 = 待机
+
     hdmi_mixer #(
         .H_OFFSET   ( 0    ),
         .V_OFFSET   ( 0    ),
@@ -1139,6 +1179,7 @@ isp_top u_isp_top (
         .I_clk           ( S_hdmi_pixel_clk   ),
         .I_rst_n         ( S_hdmi_rst_n       ),
         .I_logo_en       ( S_logo_en          ),
+        .I_standby       ( S_standby          ),
         .I_mode          ( S_mode_hdmi_sync   ),
         .I_ae_exp        ( S_ae_hdmi_sync     ),
         .I_ae_gain       ( S_ag_hdmi_sync     ),

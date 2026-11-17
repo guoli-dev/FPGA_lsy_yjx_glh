@@ -786,12 +786,8 @@
     /* ⑤ 顶部连接状态点：连上后变绿并常亮（配合原有呼吸动画） */
     .dot.online, #headerDot.online { background: #34d399; }
 
-    /* ⑥ 交互记录新条目：淡入，别突然蹦出来 */
-    .log > * { animation: logfade .35s ease-out both; }
-    @keyframes logfade {
-      from { opacity: 0; transform: translateY(3px); }
-      to   { opacity: 1; transform: none; }
-    }
+    /* ⑥ 交互记录：静态显示，不闪不跳 */
+    .log > * { animation: none; }
 
     /* ⑦ 标题下的渐变线：轻微流动 */
     .title-group::after {
@@ -902,6 +898,15 @@
             <div class="field"><span class="k">最低帧率 / FPS</span><input id="pFps" value="20" aria-label="最低帧率"></div>
             <div class="field"><span class="k">运动区域阈值</span><input id="pLimit" value="200" aria-label="运动区域阈值"></div>
             <button class="btn" id="apply">应用监控参数</button>
+          </section>
+
+          <section class="card">
+            <div class="head"><h2>颜色识别调参（下发 FPGA）</h2></div>
+            <div class="field"><span class="k">亮度门槛 0~255</span><input id="tBright" type="number" min="0" max="255" value="45" aria-label="颜色亮度门槛"></div>
+            <div class="field"><span class="k">红边距 0~3</span><input id="tRed" type="number" min="0" max="3" value="3" aria-label="红边距"></div>
+            <div class="field"><span class="k">绿边距 0~3</span><input id="tGreen" type="number" min="0" max="3" value="0" aria-label="绿边距"></div>
+            <div class="field"><span class="k">蓝边距 0~3</span><input id="tBlue" type="number" min="0" max="3" value="3" aria-label="蓝边距"></div>
+            <button class="btn" id="applyTune">应用并下发</button>
           </section>
 
           <section class="card">
@@ -1257,5 +1262,11 @@
     fetch("/params", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ loss_seconds: $("pLoss").value, min_fps: $("pFps").value,
         motion_limit: $("pLimit").value, focus: $("pFocus").value }) });
+  });
+
+  $("applyTune").addEventListener("click", () => {
+    fetch("/tune", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brightness: $("tBright").value, red: $("tRed").value,
+        green: $("tGreen").value, blue: $("tBlue").value }) });
   });
 </script>

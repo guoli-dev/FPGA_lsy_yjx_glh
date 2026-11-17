@@ -37,7 +37,7 @@
 // ======================= 可调参数 =======================
 #define COLOR_TRACK_USE_MASK        0x07u // 参与选择的颜色: bit0红 bit1绿 bit2蓝
 #define COLOR_TRACK_SWITCH_MARGIN   5u    // 换目标滞回: 另一色宽 > 当前锁定宽+此值才切换
-#define COLOR_TRACK_LOCK_LOST_FRAMES 5u   // 锁定色连续丢这么多帧才放弃(约83ms@60Hz)
+#define COLOR_TRACK_LOCK_LOST_FRAMES 20u   // 锁定色连续丢这么多帧才放弃(约333ms@60Hz), 容忍FPGA偶发丢帧
 #define COLOR_TRACK_DEV_INVERT  0     // dev 符号取反: 1=摄像头画面左右镜像时用; 0=正常(默认)
 #define COLOR_TRACK_DEADBAND    4     // 偏差死区(像素*8), 挡住抖动
 #define COLOR_TRACK_NEAR_W      30    // [旧] 距离三段阈值, 现已不用
@@ -74,8 +74,8 @@
 #define COLOR_TRACK_MAX_BACK            0.0f  // 最大后退速度; 0=太近只停不后退
 
 // 平滑: 一阶低通 + 命令斜率限制, 消除卡顿/硬起停
-#define COLOR_TRACK_DEV_ALPHA           0.30f // dev 低通系数(0~1, 越小越平滑)
-#define COLOR_TRACK_WID_ALPHA           0.30f // 宽度低通系数
+#define COLOR_TRACK_DEV_ALPHA           0.18f // dev 低通系数(0~1, 越小越平滑)
+#define COLOR_TRACK_WID_ALPHA           0.18f // 宽度低通系数
 #define COLOR_TRACK_ACCEL_STEP          5.0f  // 每20ms横移/前后命令最大变化量
 #define COLOR_TRACK_Z_STEP              10.0f // 每20ms车头修正量最大变化量(抑制左右抖)
 #define COLOR_TRACK_BASE_SPEED         35.0f  // [旧]
@@ -84,13 +84,10 @@
 #define COLOR_TRACK_ENABLE      1     // 无线串口/FPGA 帧驱动；断帧 200ms 自动停车
 
 // ======================= 色卡指令模式 =======================
-// 拨码开关切到色卡模式后, 按稳定颜色做离散动作:
-//   红=前进 CARD_DIST_CM, 绿=后退 CARD_DIST_CM, 蓝=原地旋转 CARD_ROT_DEG, 无/多色=停
-#define CARD_DIST_CM          100.0f // 前进/后退距离(cm)
-#define CARD_ROT_DEG          360.0f // 原地旋转角度(度)
-#define CARD_FWD_SPEED        50.0f  // 前进速度(Car_Speed_Y 量级, 与跟踪同量纲)
-#define CARD_BACK_SPEED       50.0f  // 后退速度
-#define CARD_ROT_SPEED        40.0f  // 旋转速度(Car_Speed_Z 量级)
+// 拨码开关切到色卡模式后, 按稳定颜色做连续动作(锁存: 识别到新颜色才切换, 无/多色保持上一命令):
+//   红=停止, 绿=前进, 蓝=原地旋转
+#define CARD_FWD_SPEED        80.0f  // 前进速度(Car_Speed_Y 量级, 与跟踪同量纲)
+#define CARD_ROT_SPEED        60.0f  // 旋转速度(Car_Speed_Z 量级)
 #define CARD_ROT_DIR          1      // 旋转方向: 1=顺时针(右转) -1=逆时针
 
 // ======================= 自测 =======================
