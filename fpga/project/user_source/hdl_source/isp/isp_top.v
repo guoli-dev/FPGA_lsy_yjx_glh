@@ -432,30 +432,13 @@ cartoon_effect_96 #(
 // 显示模式选择: 0=原图  1=边缘  2=卡通化  3=跟踪(原图+画框)
 // (2 原来是 SEG 分割模式的占位, 一直回落到原图; 2026-10-10 改成卡通化,
 //  直接补上基础扩展要求(1) 的"区域填充"。)
-wire [95:0] cls_tdata;
-wire        cls_tuser, cls_tvalid;
-
-// mode 7 = colour classification debug: hit pixels are tinted
-//   magenta = judged blue, yellow = judged green, cyan = judged red
-// the criteria inside are identical to color_detect_96 so this view is exact
-classify_overlay_96 #(
-    .COLOR_MARGIN_SHIFT(2 ),
-    .MIN_BRIGHT       (45)
-) u_classify (
-    .I_clk   (axi4s_video_aclk),
-    .I_rst_n (I_rst_n),
-    .I_bypass(1'b0),
-    .I_tuser (gam_tuser ),
-    .I_tvalid(gam_tvalid),
-    .I_tdata (gam_tdata ),
-    .O_tuser (cls_tuser ),
-    .O_tvalid(cls_tvalid),
-    .O_tdata (cls_tdata )
-);
-
+// 2026-11-17: the mode-7 colour-classification overlay was removed. It painted
+// every pixel the detector accepted, which is not something to ship, and it was
+// never meant for the demo. classify_overlay_96 itself is still defined further
+// down the file if the view is ever needed again; the probe readout in mode 7
+// is kept because it only changes the OSD numbers, not the picture.
 wire [95:0] S_mux_tdata = (S_mode == 3'd1) ? edge_tdata    :
-                          (S_mode == 3'd2) ? cartoon_tdata :
-                          (S_mode == 3'd7) ? cls_tdata     : raw_tdata_d;
+                          (S_mode == 3'd2) ? cartoon_tdata : raw_tdata_d;
 
 always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
     if (!I_rst_n) begin
