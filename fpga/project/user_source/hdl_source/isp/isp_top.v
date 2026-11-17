@@ -895,16 +895,27 @@ module color_detect_96 #(
     // Runtime-tunable dominance margin: the level selects the fraction of the
     // leading channel it must beat the others by.
     //   0 = 2/16 (12.5%), 1 = 3/16 (18.75%), 2 = 4/16 (25%), 3 = 5/16 (31.25%)
+    //
+    // 2026-11-17: absolute floor added. The proportional term collapses in dim
+    // scenes - at g = 20 the level-0 margin is only 2 codes - and sensor noise
+    // alone clears that, so a dark picture fills up with phantom green boxes.
+    // The floor keeps a minimum separation in codes, which makes the gate get
+    // STRICTER as it gets darker instead of looser. It only bites below
+    // x = 64 (12.5 % of 64 = 8), so normally lit objects are unaffected.
+    localparam [7:0] MARGIN_FLOOR = 8'd8;
+
     function [7:0] color_margin;
         input [7:0] x;
         input [1:0] lvl;
+        reg   [7:0] m;
         begin
             case (lvl)
-                2'd0: color_margin = x >> 3;                  // 2/16
-                2'd1: color_margin = (x >> 3) + (x >> 4);     // 3/16
-                2'd2: color_margin = x >> 2;                  // 4/16
-                default: color_margin = (x >> 2) + (x >> 4);  // 5/16
+                2'd0: m = x >> 3;                  // 2/16
+                2'd1: m = (x >> 3) + (x >> 4);     // 3/16
+                2'd2: m = x >> 2;                  // 4/16
+                default: m = (x >> 2) + (x >> 4);  // 5/16
             endcase
+            color_margin = (m < MARGIN_FLOOR) ? MARGIN_FLOOR : m;
         end
     endfunction
     function is_red;
