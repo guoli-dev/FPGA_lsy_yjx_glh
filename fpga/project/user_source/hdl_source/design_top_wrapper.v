@@ -658,10 +658,6 @@ end
 reg [2:0] S_mode_hdmi_meta, S_mode_hdmi_sync;
 reg [15:0] S_ae_hdmi_meta, S_ae_hdmi_sync;
 reg [7:0]  S_ag_hdmi_meta, S_ag_hdmi_sync;
-// diagnostic probe: RGB of the frame's largest-G pixel (ISP domain), synced here.
-// In mode 7 the OSD shows it as {R,G} in the AE field and B in the gain field.
-wire [23:0] S_probe_rgb_csi;
-reg  [23:0] S_pb_meta, S_pb_sync;
 always @(posedge S_hdmi_pixel_clk or negedge S_hdmi_rst_n) begin
     if(!S_hdmi_rst_n) begin
         S_mode_hdmi_meta <= 3'd0;
@@ -670,8 +666,6 @@ always @(posedge S_hdmi_pixel_clk or negedge S_hdmi_rst_n) begin
         S_ae_hdmi_sync <= 16'd0;
         S_ag_hdmi_meta <= 8'd0;
         S_ag_hdmi_sync <= 8'd0;
-        S_pb_meta      <= 24'd0;
-        S_pb_sync      <= 24'd0;
     end else begin
         S_mode_hdmi_meta <= S_display_mode;
         S_mode_hdmi_sync <= S_mode_hdmi_meta;
@@ -679,8 +673,6 @@ always @(posedge S_hdmi_pixel_clk or negedge S_hdmi_rst_n) begin
         S_ae_hdmi_sync <= S_ae_hdmi_meta;
         S_ag_hdmi_meta <= S_ag[7:0];
         S_ag_hdmi_sync <= S_ag_hdmi_meta;
-        S_pb_meta      <= S_probe_rgb_csi;   // probe: changes once per frame,
-        S_pb_sync      <= S_pb_meta;         // two flops are plenty
     end
 end
 
@@ -951,7 +943,6 @@ isp_top u_isp_top (
 .O_mot_box       (S_mot_box_csi),
 .O_ae_too_bright (S_isp_ae_too_bright),
 .O_ae_too_dark   (S_isp_ae_too_dark),
-.O_probe_rgb     (S_probe_rgb_csi),
 .O_ae_frame_toggle(S_isp_ae_frame_toggle)
   );
 
@@ -1149,8 +1140,8 @@ isp_top u_isp_top (
         .I_rst_n         ( S_hdmi_rst_n       ),
         .I_logo_en       ( S_logo_en          ),
         .I_mode          ( S_mode_hdmi_sync   ),
-        .I_ae_exp        ( (S_mode_hdmi_sync == 3'd7) ? S_pb_sync[23:8] : S_ae_hdmi_sync ),
-        .I_ae_gain       ( (S_mode_hdmi_sync == 3'd7) ? S_pb_sync[ 7:0] : S_ag_hdmi_sync ),
+        .I_ae_exp        ( S_ae_hdmi_sync     ),
+        .I_ae_gain       ( S_ag_hdmi_sync     ),
         .I_mot_cnt       ( S_mot_sync          ),
         .I_lat_fid       ( S_lat_sync         ),
         .I_det_boxes     ( S_det_boxes_hdmi   ),

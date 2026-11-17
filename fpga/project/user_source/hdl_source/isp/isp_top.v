@@ -26,9 +26,6 @@ module isp_top (
     output [63:0] 	O_mot_box,
     output 			O_ae_too_bright	,
     output 			O_ae_too_dark	,
-    // diagnostic probe: RGB of the frame's largest-G pixel. Point the camera at
-    // the green target and this reports its real values onto the OSD in mode 7.
-    output [23:0] 	O_probe_rgb		,
     output 			O_ae_frame_toggle
 );
  
@@ -167,40 +164,6 @@ wire [95:0] awb_demo_tdata = (S_mode == 3'd5 && awb_beat_x < 9'd160)
                                ? awb_raw_tdata : awb_O_tdata;
 wire [95:0] demo_tdata = (S_mode == 3'd6 && gamma_left_d)
                             ? gamma_bypass_d : gam_tdata;
-
-// ---- diagnostic probe -------------------------------------------------------
-// Latch the RGB of the largest-G pixel seen this frame. Whatever green target
-// the camera is pointed at, this reports its actual R/G/B, which is exactly what
-// is_green compares against the 12.5 % margin. Read it off the OSD in mode 7.
-// Pixel layout in gam_tdata: pix0=[95:72] ... pix3=[23:0], {R,G,B} inside each.
-wire [7:0] pb_g0 = gam_tdata[87:80];
-wire [7:0] pb_g1 = gam_tdata[63:56];
-wire [7:0] pb_g2 = gam_tdata[39:32];
-wire [7:0] pb_g3 = gam_tdata[15: 8];
-wire       pb_w1 = (pb_g1 > pb_g0);
-wire       pb_w3 = (pb_g3 > pb_g2);
-wire [7:0] pb_ga = pb_w1 ? pb_g1 : pb_g0;
-wire [7:0] pb_gb = pb_w3 ? pb_g3 : pb_g2;
-wire [23:0] pb_pa = pb_w1 ? gam_tdata[71:48] : gam_tdata[95:72];
-wire [23:0] pb_pb = pb_w3 ? gam_tdata[23: 0] : gam_tdata[47:24];
-wire       pb_wb = (pb_gb > pb_ga);
-wire [7:0] pb_gmax = pb_wb ? pb_gb : pb_ga;
-wire [23:0] pb_pmax = pb_wb ? pb_pb : pb_pa;
-
-reg  [7:0]  S_pb_best;
-reg  [23:0] S_pb_rgb;
-always @(posedge axi4s_video_aclk or negedge I_rst_n) begin
-    if (!I_rst_n) begin
-        S_pb_best <= 8'd0;
-        S_pb_rgb  <= 24'd0;
-    end else if (gam_tuser) begin
-        S_pb_best <= 8'd0;                 // restart the search each frame
-    end else if (gam_tvalid && (pb_gmax > S_pb_best)) begin
-        S_pb_best <= pb_gmax;
-        S_pb_rgb  <= pb_pmax;
-    end
-end
-assign O_probe_rgb = S_pb_rgb;
 
 // Four pixels per valid beat; reset during the line gap (tlast is a
 // falling-valid pulse in this legacy AWB). No frame buffer or pixel drop.
