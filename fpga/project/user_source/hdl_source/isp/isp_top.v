@@ -398,8 +398,10 @@ cartoon_effect_96 #(
 // 2026-11-17: the mode-7 colour-classification overlay was removed. It painted
 // every pixel the detector accepted, which is not something to ship, and it was
 // never meant for the demo. classify_overlay_96 itself is still defined further
-// down the file if the view is ever needed again; the probe readout in mode 7
-// is kept because it only changes the OSD numbers, not the picture.
+// down the file if the view is ever needed again.
+// The max-G probe that briefly shared mode 7 is gone as well: it hijacked the
+// OSD AE fields, so the exposure readout was showing probe numbers instead of
+// the real AE value. The OSD now shows AE/AG again in every mode.
 wire [95:0] S_mux_tdata = (S_mode == 3'd1) ? edge_tdata    :
                           (S_mode == 3'd2) ? cartoon_tdata : raw_tdata_d;
 
