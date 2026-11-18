@@ -968,9 +968,25 @@ module color_detect_96 #(
     wire [7:0] sav_g = gav[9:2];
     wire [7:0] sav_b = bav[9:2];
 
-    wire hr = is_red  (sav_r,sav_g,sav_b);
-    wire hg = is_green(sav_r,sav_g,sav_b);
-    wire hb = is_blue (sav_r,sav_g,sav_b);
+    // ---- clip guard (2026-11-18) -------------------------------------------
+    // Borrowed from the clip-count idea in Infinite-ISP's AE statistics, applied
+    // where it actually matters for us: the colour decision.
+    //
+    // When two of the three channels sit at full scale the chroma is gone - the
+    // pixel is a blown highlight, and the four judgement conditions are then
+    // comparing noise. That is why shiny objects used to flicker in and out of
+    // "green". Rejecting such groups costs one comparator chain and reuses the
+    // same 250 threshold the AE block already uses.
+    localparam [7:0] CLIP_LEVEL = 8'd250;
+
+    wire [1:0] clip_num = {1'b0, (sav_r >= CLIP_LEVEL)}
+                        + {1'b0, (sav_g >= CLIP_LEVEL)}
+                        + {1'b0, (sav_b >= CLIP_LEVEL)};
+    wire       clip_two = (clip_num >= 2'd2);
+
+    wire hr = is_red  (sav_r,sav_g,sav_b) & ~clip_two;
+    wire hg = is_green(sav_r,sav_g,sav_b) & ~clip_two;
+    wire hb = is_blue (sav_r,sav_g,sav_b) & ~clip_two;
 
     // I_hit[3] = 组内第 0 个像素(最左), I_hit[0] = 第 3 个像素
     // 现在整组同判，4 位一起置位 —— CCL 的 MIN_RUN=3 因此等价于"组被判中"。
