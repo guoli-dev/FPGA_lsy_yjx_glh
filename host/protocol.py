@@ -193,8 +193,8 @@ CAR_HEADER = 0xC5
 CAR_TAIL = 0x5C
 CAR_FRAME_LEN = 42
 
-CAR_MODE_NAMES = {0: "自动", 1: "红", 2: "绿", 3: "蓝"}
-CAR_COLOR_NAMES = {0: "无", 1: "红", 2: "绿", 3: "蓝"}
+CAR_MODE_NAMES = {0: "自动（就近）", 1: "红色", 2: "绿色", 3: "蓝色"}
+CAR_COLOR_NAMES = {0: "无", 1: "红色", 2: "绿色", 3: "蓝色"}
 
 
 def crc8(data: bytes) -> int:

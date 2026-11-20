@@ -1,7 +1,9 @@
-<title>视觉遥测控制台</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能小车视觉控制台</title>
 <style>
   /* Design plan — frosted-glass telemetry console.
      Light ambient stage with soft blue blobs behind a glass sidebar and
@@ -805,6 +807,9 @@
       .plot::after, .mode-btn.active, .log > *, .title-group::after { animation: none !important; }
     }
 </style>
+<link rel="stylesheet" href="apple-light.css">
+</head>
+<body>
 
 <div class="stage" aria-hidden="true">
   <div class="blob b1"></div>
@@ -927,9 +932,19 @@
         <div class="tile"><div class="k">接收帧率</div><div class="v"><span id="cRate">--</span><span class="u">帧/秒</span></div></div>
         <div class="tile"><div class="k">累计帧</div><div class="v" id="cFrames">--</div></div>
         <div class="tile"><div class="k">丢帧</div><div class="v" id="cLost">--</div></div>
-        <div class="tile"><div class="k">目标选择</div><div class="v" id="cMode">--</div></div>
+        <div class="tile"><div class="k">目标模式</div><div class="v" id="cMode">--</div></div>
         <div class="tile"><div class="k">锁定颜色</div><div class="v" id="cLocked">--</div></div>
         <div class="tile"><div class="k">电池</div><div class="v" id="cBatt">--</div></div>
+      </section>
+
+      <section class="card car-mode-card">
+        <div class="head"><h2>目标模式</h2><span class="hint">与小车屏幕一致 · KEY_1 切换</span></div>
+        <div class="car-mode-strip" aria-label="小车目标模式" aria-live="polite">
+          <div class="car-mode" data-car-mode="0"><span class="mode-number">0</span><span><strong>自动</strong><small>就近目标</small></span></div>
+          <div class="car-mode" data-car-mode="1"><span class="mode-number">1</span><span><strong>红色</strong><small>锁定红色</small></span></div>
+          <div class="car-mode" data-car-mode="2"><span class="mode-number">2</span><span><strong>绿色</strong><small>锁定绿色</small></span></div>
+          <div class="car-mode" data-car-mode="3"><span class="mode-number">3</span><span><strong>蓝色</strong><small>锁定蓝色</small></span></div>
+        </div>
       </section>
 
       <section class="card">
@@ -998,6 +1013,7 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const btns = [...document.querySelectorAll(".mode-btn[data-mode]")];
+  const carModes = [...document.querySelectorAll(".car-mode[data-car-mode]")];
   const carTab = $("carTab"), fpgaView = $("fpgaView"), carView = $("carView");
   let carOpen = false, carPort = "";
   const dyn = $("dyn");
@@ -1139,10 +1155,23 @@
     $("cRate").textContent = car.rate == null ? "--" : car.rate;
     $("cFrames").textContent = car.frames == null ? "--" : car.frames;
     $("cLost").textContent = car.lost == null ? "--" : car.lost;
-    if (!p) { $("cPlot").innerHTML = ""; return; }
+    if (!p) {
+      $("cPlot").innerHTML = "";
+      carModes.forEach((item) => {
+        item.classList.remove("active");
+        item.removeAttribute("aria-current");
+      });
+      return;
+    }
     renderCarPlot(p);
 
     $("cMode").textContent = p.mode;
+    carModes.forEach((item) => {
+      const active = Number(item.dataset.carMode) === p.mode_id;
+      item.classList.toggle("active", active);
+      if (active) item.setAttribute("aria-current", "true");
+      else item.removeAttribute("aria-current");
+    });
     $("cLocked").textContent = p.locked;
     $("cBatt").textContent = p.battery > 0 ? p.battery.toFixed(1) + " V" : "--";
     $("cRed").textContent = devText(p.rgb[0].dev) + " · W=" + p.rgb[0].wid;
@@ -1270,3 +1299,5 @@
         green: $("tGreen").value, blue: $("tBlue").value }) });
   });
 </script>
+</body>
+</html>

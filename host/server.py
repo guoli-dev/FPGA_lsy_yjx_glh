@@ -25,6 +25,7 @@ from protocol import (
 from app import UdpWorker
 
 INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+APPLE_CSS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple-light.css")
 
 
 class ConsoleState:
@@ -194,6 +195,7 @@ class ConsoleState:
             target = ((packet.target_angle + 180.0) % 360.0) - 180.0
             data["packet"] = {
                 "seq": packet.seq,
+                "mode_id": packet.mode,
                 "mode": CAR_MODE_NAMES.get(packet.mode, "--"),
                 "locked": CAR_COLOR_NAMES.get(packet.locked, "--"),
                 "dev": packet.dev,
@@ -351,6 +353,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             with open(INDEX, "rb") as f:
                 self._send(f.read().decode("utf-8"), 200, "text/html; charset=utf-8")
+        elif path == "/apple-light.css":
+            with open(APPLE_CSS, "rb") as f:
+                self._send(f.read().decode("utf-8"), 200, "text/css; charset=utf-8")
         elif path == "/state":
             self._json(STATE.snapshot())
         elif path == "/car/ports":
@@ -445,7 +450,7 @@ def main():
     threading.Thread(target=process_loop, daemon=True).start()
     WORKER.start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"FPGA Vision 网页版已启动：http://localhost:{port}")
+    print(f"FPGA Vision 网页版已启动：http://127.0.0.1:{port}")
     print(f"脚本路径：{os.path.abspath(__file__)}")
     try:
         server.serve_forever()

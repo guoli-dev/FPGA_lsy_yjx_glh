@@ -1,8 +1,10 @@
 import queue
+import time
 import unittest
 
 from car_link import CarLink
 from protocol import CAR_FRAME_LEN, crc8, parse_car_frame
+from server import ConsoleState
 
 
 def _word(value):
@@ -69,6 +71,14 @@ class CarProtocolTests(unittest.TestCase):
         self.assertIsNone(parse_car_frame(good[:-1]))
         bad_type = good[:1] + b"\x02" + good[2:]
         self.assertIsNone(parse_car_frame(bad_type))
+
+    def test_snapshot_uses_lcd_mode_mapping(self):
+        state = ConsoleState()
+        state.handle(("car", parse_car_frame(build_frame()), time.monotonic()))
+        packet = state.snapshot()["car"]["packet"]
+        self.assertEqual(packet["mode_id"], 1)
+        self.assertEqual(packet["mode"], "红色")
+        self.assertEqual(packet["locked"], "绿色")
 
     def test_serial_resync(self):
         events = queue.Queue()

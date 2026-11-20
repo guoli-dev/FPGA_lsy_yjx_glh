@@ -8,7 +8,7 @@ VoltAgent `awesome-design-md` 的 Apple 参考，并针对 Windows Tkinter 与�
 
 ## 启动与网络
 
-双击 `启动上位机_网页版.bat`（或 `python server.py`），浏览器打开 <http://localhost:8000>。
+双击 `启动上位机_网页版.bat`（或 `python server.py`），浏览器打开 <http://127.0.0.1:8000>。
 端口被占用、页面像旧版本时，用 `重启网页上位机.bat`，它会先结束占用 8000 的旧进程再启动。
 
 `app.py` 是原来的桌面版 Tkinter 界面，网页服务会复用它里面的 UDP 接收线程，运行网页版时不需要打开它。
